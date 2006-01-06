@@ -37,6 +37,25 @@ public sealed class AST
     return node;
   }
   
+  // simple nodes are ones that we can skip evaluating or evaluate multiple times without breaking anything.
+  // for instance: x in (a,b,c) can be optimized into _t=x; _t==a || _t==b || _t==c if a, b, and c are all simple
+  public static bool IsSimpleNode(Node n)
+  { if(n.ClearsStack || n.Interrupts) return false;
+    if(n.IsConstant || n is VariableNode || n is SliceNode) return true;
+
+    IndexNode idx = n as IndexNode;
+    if(idx!=null) return IsSimpleNode(idx.Value) && IsSimpleNode(idx.Index);
+
+    TupleNode tn = n as TupleNode;
+    if(tn!=null)
+    { foreach(Node cn in tn.Expressions) if(!IsSimpleNode(cn)) return false;
+      return true;
+    }
+
+    return false;
+  }
+
+  #region BoaWalker
   /* This walker performs the following tasks:
     1. Distinguish between local/global names by searching for 'global' nodes, and convert 
         def fun(a):
@@ -134,6 +153,7 @@ public sealed class AST
     LambdaNode func;
     int baseCount;
   }
+  #endregion
 }
 #endregion
 
@@ -278,10 +298,54 @@ public sealed class InOperator : Operator
 
   public override void Emit(string name, CodeGenerator cg, ref Type etype, params Node[] args)
   { CheckArity(name, args);
-    // TODO: optimize "exp in (x, y, z)" into "var=exp, var==x || var==y || var==z"
-    cg.EmitNodes(args[0], args[1]);
-    cg.EmitCall(typeof(BoaOps), "IsIn");
-    if(etype!=typeof(bool)) { cg.BoolToObject(); etype=typeof(object); }
+    if(etype==typeof(void)) cg.EmitVoids(args);
+    else
+    { TupleNode tn = args[1] as TupleNode;
+      if(tn==null || !AST.IsSimpleNode(tn))
+      { cg.EmitNodes(args[0], args[1]);
+        cg.EmitCall(typeof(BoaOps), "IsIn");
+        if(etype!=typeof(bool)) { cg.BoolToObject(); etype=typeof(object); }
+      }
+      else if(tn.Expressions.Length==0)
+      { args[0].EmitVoid(cg);
+        if(etype==typeof(bool)) cg.EmitBool(false);
+        else
+        { cg.EmitConstantObject(false);
+          etype = typeof(object);
+        }
+      }
+      else if(tn.Expressions.Length==1)
+      { args[0].Emit(cg);
+        tn.Expressions[0].Emit(cg);
+        cg.EmitCall(typeof(Ops), etype==typeof(bool) ? "AreEqual" : "Equal");
+        if(etype!=typeof(bool)) etype = typeof(object);
+      }
+      else // optimize "exp in (x, y, z)" into "_t=exp, _t==x || _t==y || _t==z"
+      { Label isin = cg.ILG.DefineLabel(), done = cg.ILG.DefineLabel();
+
+        args[0].Emit(cg);
+        Slot tmp = cg.AllocLocalTemp(typeof(object));
+        tmp.EmitSet(cg);
+
+        for(int i=0; i<tn.Expressions.Length; i++)
+        { tmp.EmitGet(cg);
+          if(i==tn.Expressions.Length-1) cg.FreeLocalTemp(tmp);
+          tn.Expressions[i].Emit(cg);
+          cg.EmitCall(typeof(Ops), "AreEqual");
+          cg.ILG.Emit(OpCodes.Brtrue, isin);
+        }
+        if(etype==typeof(bool)) cg.EmitBool(false);
+        else
+        { cg.EmitConstantObject(false);
+          etype = typeof(object);
+        }
+        cg.ILG.Emit(OpCodes.Br_S, done);
+        cg.ILG.MarkLabel(isin);
+        if(etype==typeof(bool)) cg.EmitBool(true);
+        else cg.EmitConstantObject(true);
+        cg.ILG.MarkLabel(done);
+      }
+    }
   }
 
   public override object Evaluate(string name, params object[] args) { return BoaOps.IsIn(args[0], args[1]); }
@@ -298,21 +362,33 @@ public sealed class AssignNode : SetNode
   public override void Emit(CodeGenerator cg, ref Type etype)
   { cg.MarkPosition(this);
 
-    int num=0, length=0;
+    int num=0, length=-1;
+    bool simple = Options.Current.OptimizeAny && !RHS.IsConstant;
+
+    if(RHS is TupleNode)
+    { TupleNode tn = (TupleNode)RHS;
+      length = tn.Expressions.Length;
+    }
+    else simple = false;
+
     foreach(Node n in LHS)
     { TupleNode tn = n as TupleNode;
+
       if(tn!=null)
-      { if(num++==0) length = tn.Expressions.Length;
+      { num++;
+        if(length==-1) length = tn.Expressions.Length;
         else if(tn.Expressions.Length!=length)
-          throw Ops.SyntaxError(this, "inconsistent tuple lengths in multiple tuple assignment");
+          throw Ops.SyntaxError(this, "inconsistent tuple lengths in tuple assignment");
+        if(simple) foreach(Node cn in tn.Expressions) if(cn is TupleNode) { simple=false; break; }
       }
     }
     if(num==0) { base.Emit(cg, ref etype); return; } // if there are no tuple nodes, then it's a simple assignment
 
+    // TODO: optimize cases like (x,y) = (y,x) into _t=x; x=y; y=_t. make sure to properly handle (a,b,c,d) = (b,a,a,b)
     if(RHS.IsConstant)
     { object value = RHS.Evaluate();
       Type type = null;
-      if(num!=LHS.Length) // emit if there are non-tuples on the LHS
+      if(num!=LHS.Length) // emit RHS if there are non-tuples on the LHS
       { type = GetNodeType();
         RHS.Emit(cg, ref type);
         if(etype!=typeof(void)) etype = type;
@@ -327,18 +403,60 @@ public sealed class AssignNode : SetNode
         }
       }
 
-      if(type==null && etype!=typeof(void))
+      if(type==null && etype!=typeof(void)) // emit RHS if there's a return value and we haven't emitted already
       { etype = GetNodeType();
         RHS.Emit(cg, ref etype);
       }
     }
-    /* TODO: if it's just tuple -> tuple assignment, we can convert it to a simpler form. this could be optimized more
-    // (eg, with smart dependency checking so (x,y[x],z) = (y,z,x) produces y[x]=z; z=x; x=y), but the effort is
-    // better spent elsewhere for now.
-    // TODO: but it should at least be optimized so that ((x))=((y)), (x,y)=(a,b), and (x,y)=(y,x) are relatively efficient
-    else if(RHS is TupleNode)
-    { throw new NotImplementedException();
-    }*/
+    else if(simple)
+    { if(num==1 && num==LHS.Length && etype==typeof(void) && !RHS.ClearsStack) // if it's really simple, just push and pop
+      { TupleNode rhs=(TupleNode)RHS, lhs=(TupleNode)LHS[0];
+        Type[] types = new Type[length];
+        for(int i=0; i<length; i++)
+        { types[i] = lhs.Expressions[i].GetNodeType();
+          rhs.Expressions[i].Emit(cg, ref types[i]);
+        }
+        for(int i=length-1; i>=0; i--) EmitSet(cg, lhs.Expressions[i], types[i]);
+      }
+      else
+      { cg.EmitTypedNode(RHS, typeof(Tuple));
+        Slot tuple = null;
+        if(num!=LHS.Length || etype!=typeof(void))
+        { cg.ILG.Emit(OpCodes.Dup);
+          if(num!=LHS.Length)
+          { tuple = cg.AllocLocalTemp(typeof(object));
+            tuple.EmitSet(cg);
+          }
+        }
+
+        cg.EmitFieldGet(typeof(Tuple), "items");
+        for(int li=LHS.Length-1,t=0,nt=0; li>=0; li--)
+        { TupleNode tn = LHS[li] as TupleNode;
+          if(tn==null)
+          { tuple.EmitGet(cg);
+            if(++nt==LHS.Length-num && etype==typeof(void)) cg.FreeLocalTemp(tuple);
+            EmitSet(cg, LHS[li], typeof(object));
+          }
+          else
+          { if(++t!=num) cg.ILG.Emit(OpCodes.Dup);
+            for(int i=0; i<tn.Expressions.Length; i++)
+            { if(i!=tn.Expressions.Length-1) cg.ILG.Emit(OpCodes.Dup);
+              cg.EmitInt(i);
+              cg.ILG.Emit(OpCodes.Ldelem_Ref);
+              EmitSet(cg, tn.Expressions[i], typeof(object));
+            }
+          }
+        }
+
+        if(etype!=typeof(void))
+        { if(tuple!=null)
+          { tuple.EmitGet(cg);
+            cg.FreeLocalTemp(tuple);
+          }
+          etype = typeof(object);
+        }
+      }
+    }
     else
     { Type type = typeof(object);
       RHS.Emit(cg, ref type);
@@ -418,6 +536,24 @@ public sealed class AssignNode : SetNode
   { TupleNode tn = lhs as TupleNode;
     if(tn!=null) foreach(Node n in tn.Expressions) UpdateNames(names, ref i, n);
     else base.UpdateNames(names, ref i, lhs);
+  }
+
+  sealed class NameWalker : IWalker
+  { public string[] GetNames()
+    { string[] ret = (string[])names.ToArray(typeof(string));
+      names.Clear();
+      return ret;
+    }
+
+    public void PostWalk(Node n) { }
+
+    public bool Walk(Node n)
+    { VariableNode vn = n as VariableNode;
+      if(vn!=null) names.Add(vn.Name.String);
+      return true;
+    }
+
+    ArrayList names = new ArrayList();
   }
 
   void EmitTupleAssignment(CodeGenerator cg, TupleNode lhs, object value)
@@ -797,7 +933,7 @@ public sealed class ImportFromNode : Node
     return null;
   }
 
-  public override Type GetNodeType() { return null; }
+  public override Type GetNodeType() { return typeof(void); }
 
   public readonly string Module;
   public readonly string[] Names, AsNames;
@@ -1022,7 +1158,7 @@ public sealed class PrintNode : Node
     return null;
   }
 
-  public override Type GetNodeType() { return null; }
+  public override Type GetNodeType() { return typeof(void); }
 
   public override void MarkTail(bool tail)
   { if(File!=null) File.MarkTail(false);

@@ -1335,7 +1335,7 @@ public sealed class Tuple : ISequence, IList, IComparable, IRepresentable
     }
   }
   Tuple(object[] items) { this.items=items; }
-// TODO: fix the access issues with LCG
+// FIXME: the object[] constructor should be internal. fix the access issues with LCG
 public static Tuple Make(ICollection col)
 { object[] items = new object[col.Count];
   col.CopyTo(items, 0);
@@ -1438,7 +1438,7 @@ public static Tuple Make(params object[] items) { return new Tuple(items); }
 
   public static readonly Tuple Empty = new Tuple();
   
-  internal readonly object[] items;
+  public readonly object[] items; // FIXME: this should be internal
   object hashCode;
 
   static Exception ImmutableError() { return new InvalidOperationException("Tuples cannot be modified"); }
