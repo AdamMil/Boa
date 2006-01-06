@@ -338,7 +338,7 @@ public sealed class Parser
       else break;
     }
     if(comps!=null)
-    { if(comps.Count==3) expr = new OpNode((BinaryOperator)comps[1], (Node)comps[0], (Node)comps[2]);
+    { if(comps.Count==3) expr = new OpNode((ComparisonOperator)comps[1], (Node)comps[0], (Node)comps[2]);
       else
       { Node[] exprs = new Node[(comps.Count+1)/2];
         ComparisonOperator[] ops = new ComparisonOperator[comps.Count/2];
@@ -360,7 +360,8 @@ public sealed class Parser
     Eat(Token.LParen);
     Parameter[] parms = ParseParamList(Token.RParen);
     Eat(Token.RParen);
-    return new SetNode(name, new LambdaNode(name, parms, new BlockNode("*FUNCTION*", ParseSuite())), SetType.Set);
+    Node func = new LambdaNode(name, parms, new BlockNode("*FUNCTION*", ParseSuite(new LiteralNode(null))));
+    return new SetNode(name, func, SetType.Set);
   }
 
   // module := <identifier> ('.' <identifier>)*
@@ -853,12 +854,14 @@ public sealed class Parser
   }
 
   // stmt_line := <simple_stmt> (';' <simple_stmt>)* (NEWLINE | EOF)
-  Node ParseStmtLine()
+  Node ParseStmtLine() { return ParseStmtLine(null); }
+  Node ParseStmtLine(Node suffix)
   { Node stmt = ParseSimpleStmt();
-    if(token==Token.Semicolon)
+    if(token==Token.Semicolon || suffix!=null)
     { ArrayList stmts = new ArrayList();
       stmts.Add(stmt);
-      while(TryEat(Token.Semicolon)) stmts.Add(ParseSimpleStmt());
+      if(token==Token.Semicolon) while(TryEat(Token.Semicolon)) stmts.Add(ParseSimpleStmt());
+      if(suffix!=null) stmts.Add(suffix);
       stmt = new BodyNode((Node[])stmts.ToArray(typeof(Node)));
     }
     Eat(Token.EOL);
@@ -866,8 +869,9 @@ public sealed class Parser
   }
 
   // suite := ':' stmt_line | ':'? NEWLINE INDENT <statement>+ UNINDENT
-  Node ParseSuite()
-  { if(TryEat(Token.Colon) && token!=Token.EOL) return ParseStmtLine();
+  Node ParseSuite() { return ParseSuite(null); }
+  Node ParseSuite(Node suffix)
+  { if(TryEat(Token.Colon) && token!=Token.EOL) return ParseStmtLine(suffix);
     int indent = this.indent;
     Eat(Token.EOL);
     if(this.indent<=indent) SyntaxError("expected indent");
@@ -876,7 +880,8 @@ public sealed class Parser
     { if(TryEat(Token.EOL)) continue;
       stmts.Add(ParseStatement());
     }
-    return new BodyNode((Node[])stmts.ToArray(typeof(Node)));
+    if(suffix!=null) stmts.Add(suffix);
+    return stmts.Count==1 ? (Node)stmts[0] : new BodyNode((Node[])stmts.ToArray(typeof(Node)));
   }
 
   // term := <factor> (('+' | '-') <factor>)*
