@@ -65,11 +65,6 @@
             </Settings>
             <References>
                 <Reference
-                    Name = "Backend"
-                    Project = "{92AD013C-BDE6-4F09-B086-A3A463CB5A19}"
-                    Package = "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}"
-                />
-                <Reference
                     Name = "Scripting"
                     Project = "{9112031B-774D-40EF-B3A9-FFBCCAC6E333}"
                     Package = "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}"
@@ -78,6 +73,11 @@
                     Name = "System"
                     AssemblyName = "System"
                     HintPath = "C:\WINDOWS\Microsoft.NET\Framework\v1.1.4322\System.dll"
+                />
+                <Reference
+                    Name = "Boa.Backend"
+                    Project = "{92AD013C-BDE6-4F09-B086-A3A463CB5A19}"
+                    Package = "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}"
                 />
             </References>
         </Build>
