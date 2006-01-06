@@ -38,21 +38,101 @@ public sealed class AST
   }
   
   /* This walker performs the following tasks:
-    1. Resolve local/global names by converting
-         def fun(a):
-           global x
-           (x,y) = (1,2)
-       into
-         def fun(a):
-           [localbind y
-             (x,y) = (1,2)]
+    1. Distinguish between local/global names by searching for 'global' nodes, and convert 
+        def fun(a):
+          global g
+          (x,g) = (1,2)
+          def helper(g): (x,y,g) = (4,5,6)
+       Into
+        def fun(a):
+          localbind x
+            (x,g) = (1,2)
+            def helper(g):
+              localbind y
+                (x,y,g) = (4,5,6)
 
        It should also handle this case:
          def fun(a):
-           global a   # error, local redefined as global
+           global a # error, local redefined as global
+           def nested():
+             global a # error, local redefined as global
+  
+       And, when we support warnings, this case:
+         def fun():
+           x = 5
+           global x # warning, 'x' assigned to before global declaration.
   */
   public sealed class BoaWalker : IWalker
-  {
+  { public void PostWalk(Node n) { }
+
+    public bool Walk(Node n)
+    { if(n is LambdaNode)
+      { foreach(Parameter p in ((LambdaNode)n).Parameters) if(p.Default!=null) p.Default.Walk(this);
+
+        if(names==null) names = new ArrayList();
+
+        LambdaNode oldFunc=func;
+        func = (LambdaNode)n;
+        int oldCount = baseCount;
+        baseCount = names.Count;
+
+        foreach(Parameter p in func.Parameters) names.Add(p.Name);
+        func.Body.Walk(this);
+
+        int pbase = baseCount+func.Parameters.Length; // discount the parameters
+        if(pbase!=names.Count)
+        { int numLocal = 0;
+          for(int i=pbase; i<names.Count; i++) if(((Name)names[i]).Depth!=Name.Global) numLocal++;
+          if(numLocal!=0)
+          { string[] localNames = new string[numLocal];
+            for(int i=pbase,j=0; i<names.Count; i++)
+            { Name name = (Name)names[i];
+              if(name.Depth!=Name.Global) localNames[j++] = name.String;
+            }
+            func.Body = new LocalBindNode(localNames, new Node[localNames.Length], func.Body);
+          }
+        }
+        names.RemoveRange(baseCount, names.Count-baseCount);
+
+        func=oldFunc; baseCount=oldCount;
+        return false;
+      }
+      else if(n is GlobalNode)
+      { if(func==null) throw Ops.SyntaxError(n, "'global' encounted outside function"); // TODO: make this a warning
+        GlobalNode gn = (GlobalNode)n;
+
+        foreach(string str in gn.Names)
+        { int i;
+          for(i=names.Count-1; i>=0; i--)
+          { Name name = (Name)names[i];
+            if(name.String==str)
+            { if(name.Depth==0 || name.Depth==Name.Local && i<baseCount)
+                throw Ops.SyntaxError(n, "'{0}' defined as both global and local", str); // parameter
+              else if(name.Depth==Name.Local)
+              { throw Ops.SyntaxError(n, "'{0}' was assigned to before 'global' statement", str); // TODO: make this a warning
+                name.Depth = Name.Global;
+                break;
+              }
+            }
+          }
+          if(i==-1) names.Add(new Name(str, Name.Global));
+        }
+      }
+      else if(n is SetNode)
+      { if(func!=null)
+          foreach(MutatedName mn in ((SetNode)n).GetMutatedNames())
+          { int i;
+            for(i=names.Count-1; i>=0; i--) if(((Name)names[i]).String==mn.Name.String) break;
+            if(i==-1) names.Add(new Name(mn.Name.String, Name.Local));
+          }
+      }
+
+      return true;
+    }
+
+    ArrayList names;
+    LambdaNode func;
+    int baseCount;
   }
 }
 #endregion
@@ -62,11 +142,15 @@ public sealed class BoaLanguage : Language
 { public override string BuiltinsNamespace { get { return "Boa.Mods"; } }
   public override string Name { get { return "Boa"; } }
 
+  #region Ops
+  public override int Compare(object a, object b) { return Ops.TypeName(a).CompareTo(Ops.TypeName(b)); }
+  #endregion
+
   #region EmitConstant
   public override bool EmitConstant(CodeGenerator cg, object value)
   { if(value is Tuple)
     { cg.EmitObjectArray(((Tuple)value).items);
-      cg.EmitNew(typeof(Tuple), typeof(object[]));
+      cg.EmitCall(typeof(Tuple), "Make", typeof(object[])); // TODO: use the constructor
     }
     else if(value is List)
     { List list = (List)value;
@@ -208,8 +292,8 @@ public sealed class InOperator : Operator
 
 #region AssignNode
 public sealed class AssignNode : SetNode
-{ public AssignNode(Node lhs, Node rhs) : base(lhs, rhs) { }
-  public AssignNode(Node[] lhs, Node rhs) : base(lhs, rhs) { }
+{ public AssignNode(Node lhs, Node rhs) : base(lhs, rhs, SetType.Set) { }
+  public AssignNode(Node[] lhs, Node rhs) : base(lhs, rhs, SetType.Set) { }
 
   public override void Emit(CodeGenerator cg, ref Type etype)
   { cg.MarkPosition(this);
@@ -225,11 +309,10 @@ public sealed class AssignNode : SetNode
     }
     if(num==0) { base.Emit(cg, ref etype); return; } // if there are no tuple nodes, then it's a simple assignment
 
-// TODO: handle etype
     if(RHS.IsConstant)
     { object value = RHS.Evaluate();
       Type type = null;
-      if(num!=LHS.Length || etype!=typeof(void)) // emit if there are non-tuples on the LHS or we need a return value
+      if(num!=LHS.Length) // emit if there are non-tuples on the LHS
       { type = GetNodeType();
         RHS.Emit(cg, ref type);
         if(etype!=typeof(void)) etype = type;
@@ -242,6 +325,11 @@ public sealed class AssignNode : SetNode
         { if(++nt!=num || etype!=typeof(void)) cg.ILG.Emit(OpCodes.Dup);
           EmitSet(cg, LHS[i], type);
         }
+      }
+
+      if(type==null && etype!=typeof(void))
+      { etype = GetNodeType();
+        RHS.Emit(cg, ref etype);
       }
     }
     /* TODO: if it's just tuple -> tuple assignment, we can convert it to a simpler form. this could be optimized more
@@ -259,7 +347,8 @@ public sealed class AssignNode : SetNode
       if(num==LHS.Length && etype==typeof(void)) tmp = null; // all tuple assignments, and no return value needed
       else
       { cg.ILG.Emit(OpCodes.Dup);
-        tmp = cg.AllocLocalTemp(typeof(object));
+        type = etype==typeof(void) || etype==typeof(object) ? typeof(object) : type;
+        tmp  = cg.AllocLocalTemp(type);
         tmp.EmitSet(cg);
       }
 
@@ -289,6 +378,8 @@ public sealed class AssignNode : SetNode
         etype = type;
       }
     }
+
+    TailReturn(cg);
   }
 
   public override MutatedName[] GetMutatedNames()
@@ -330,13 +421,7 @@ public sealed class AssignNode : SetNode
   }
 
   void EmitTupleAssignment(CodeGenerator cg, TupleNode lhs, object value)
-  { int vlen;
-    if(value is string) vlen = ((string)value).Length;
-    else if(value is ICollection) vlen = ((ICollection)value).Count;
-    else throw Ops.SyntaxError(this, "expecting a sequence on the right side of a tuple assignment");
-    if(vlen!=lhs.Expressions.Length) throw Ops.ValueError("wrong number of values to unpack");
-
-    IEnumerator e = BoaOps.GetEnumerator(value);
+  { IEnumerator e = BoaOps.PrepareTupleAssignment(value, lhs.Expressions.Length);
     for(int i=0; e.MoveNext() && i<lhs.Expressions.Length; i++)
     { Node n = lhs.Expressions[i];
       TupleNode tn = n as TupleNode;
@@ -350,13 +435,15 @@ public sealed class AssignNode : SetNode
   }
 
   void EmitTupleAssignment(CodeGenerator cg, TupleNode lhs)
-  { foreach(Node n in lhs.Expressions)
-    { cg.EmitCall(typeof(IEnumerator), "MoveNext");
+  { for(int i=0; i<lhs.Expressions.Length; i++)
+    { cg.ILG.Emit(OpCodes.Dup);
+      cg.EmitCall(typeof(IEnumerator), "MoveNext");
       cg.ILG.Emit(OpCodes.Pop); // ignore the return value (may cause problems if we encounter bad enumerators)
+      if(i!=lhs.Expressions.Length-1) cg.ILG.Emit(OpCodes.Dup);
       cg.EmitPropGet(typeof(IEnumerator), "Current");
 
-      TupleNode tn = n as TupleNode;
-      if(tn==null) EmitSet(cg, n, typeof(object));
+      TupleNode tn = lhs.Expressions[i] as TupleNode;
+      if(tn==null) EmitSet(cg, lhs.Expressions[i], typeof(object));
       else
       { cg.EmitInt(tn.Expressions.Length);
         cg.EmitCall(typeof(BoaOps), "PrepareTupleAssignment");
@@ -1035,13 +1122,14 @@ public sealed class TupleNode : Node
     { if(IsConstant) cg.EmitConstantObject(Evaluate());
       else
       { cg.EmitObjectArray(Expressions);
-        cg.EmitNew(typeof(Tuple), typeof(object[]));
+        cg.EmitCall(typeof(Tuple), "Make", typeof(object[])); // TODO: use the constructor
       }
       etype = typeof(Tuple);
     }
+    TailReturn(cg);
   }
 
-  public override object Evaluate() { return new Tuple(MakeObjectArray(Expressions)); }
+  public override object Evaluate() { return Tuple.Make(MakeObjectArray(Expressions)); }
   public override Type GetNodeType() { return typeof(Tuple); }
 
   public override void MarkTail(bool tail)

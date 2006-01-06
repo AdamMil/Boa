@@ -360,7 +360,7 @@ public sealed class Parser
     Eat(Token.LParen);
     Parameter[] parms = ParseParamList(Token.RParen);
     Eat(Token.RParen);
-    return new DefineNode(name, new LambdaNode(name, parms, new BlockNode("*FUNCTION*", ParseSuite())));
+    return new SetNode(name, new LambdaNode(name, parms, new BlockNode("*FUNCTION*", ParseSuite())), SetType.Set);
   }
 
   // module := <identifier> ('.' <identifier>)*

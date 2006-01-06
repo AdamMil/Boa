@@ -121,7 +121,7 @@ public sealed class ArrayOps
       case TypeCode.Object:
       { if(b is Integer) bv = ((Integer)b).ToInt32();
         IConvertible ic = b as IConvertible;
-        if(ic==null) return Ops.Invoke(b, "__rmul__", a);
+        if(ic==null) return Ops.InvokeProperty(b, "__rmul__", a);
         bv = ic.ToInt32(NumberFormatInfo.InvariantInfo);
         break;
       }
@@ -191,8 +191,8 @@ public sealed class ArrayOps
       for(int i=0; i<ret.Length; i++) ret[i] = s.__getitem__(i);
     }
     else
-    { ret = new object[Ops.ToInt(Ops.Invoke(o, "__len__"))];
-      object getitem = Ops.GetMember(o, "__getitem__");
+    { ret = new object[Ops.ToInt(Ops.InvokeProperty(o, "__len__"))];
+      object getitem = Ops.GetProperty(o, "__getitem__");
       for(int i=0; i<ret.Length; i++) ret[i] = Ops.Call(getitem, i);
     }
     return ret;
@@ -247,10 +247,10 @@ public sealed class BoaOps
     else if(o is IEnumerator) e = (IEnumerator)o;
     else
     { object iter;
-      if(Ops.Invoke(o, "__iter__", out iter)) e = new IterEnumerator(iter);
+      if(Ops.InvokeProperty(o, "__iter__", out iter)) e = new IterEnumerator(iter);
       else
       { object len, getitem;
-        if(Ops.GetMember(o, "__len__", out len) && Ops.GetMember(o, "__getitem__", out getitem))
+        if(Ops.GetProperty(o, "__len__", out len) && Ops.GetProperty(o, "__getitem__", out getitem))
           e = new SeqEnumerator(o);
         else { e=null; return false; }
       }
@@ -270,6 +270,24 @@ public sealed class BoaOps
     return false;
   }
 
+  public static IEnumerator PrepareTupleAssignment(object value, int items)
+  { if(value is ICollection)
+    { ICollection col = (ICollection)value;
+      return col.GetEnumerator();
+    }
+    else if(value is string)
+    { string s = (string)value;
+      if(s.Length==items) return new BoaCharEnumerator(s);
+    }
+    else if(value is ISequence)
+    { ISequence seq = (ISequence)value;
+      if(seq.__len__()==items) return new SeqEnumerator(seq);
+    }
+    else if(Ops.ToInt(Ops.InvokeProperty(value, "__len__", Ops.EmptyArray)) == items) return new SeqEnumerator(value);
+
+    throw Ops.ValueError("wrong number of values to unpack");
+  }
+
   public static void Print(object file, object o)
   { string str = Ops.Str(o);
     if(file==null) { Console.Write(str); return; }
@@ -284,7 +302,7 @@ public sealed class BoaOps
       return;
     }
 
-    Ops.Invoke(file, "write", str);
+    Ops.InvokeProperty(file, "write", str);
   }
 
   public static void PrintNewline(object file)
@@ -296,7 +314,7 @@ public sealed class BoaOps
     System.IO.Stream stream = file as System.IO.Stream;
     if(stream!=null) { stream.WriteByte((byte)'\n'); return; }
 
-    Ops.Invoke(file, "write", "\n");
+    Ops.InvokeProperty(file, "write", "\n");
   }
 
   public static List SequenceSlice(IList list, Slice slice)
@@ -344,8 +362,8 @@ public class BoaCharEnumerator : IEnumerator
 public class IterEnumerator : IEnumerator
 { public IterEnumerator(object o)
   { iter = o;
-    next = Ops.GetMember(o, "next");
-    Ops.GetMember(o, "reset", out reset);
+    next = Ops.GetProperty(o, "next");
+    Ops.GetProperty(o, "reset", out reset);
   }
 
   public object Current
@@ -376,8 +394,8 @@ public class IterEnumerator : IEnumerator
 #region SeqEnumerator
 public class SeqEnumerator : IEnumerator
 { public SeqEnumerator(object seq)
-  { length  = Ops.ToInt(Ops.Invoke(seq, "__length__"));
-    getitem = Ops.GetMember(seq, "__getitem__");
+  { length  = Ops.ToInt(Ops.InvokeProperty(seq, "__length__"));
+    getitem = Ops.GetProperty(seq, "__getitem__");
     index   = -1;
   }
 
@@ -748,7 +766,7 @@ public sealed class List : IMutableSequence, IList, IComparable, ICloneable, IRe
     ISequence seq = value as ISequence;
     if(seq==null && value is string) seq = new StringOps.SequenceWrapper((string)value);
 
-    int len = seq==null ? Ops.ToInt(Ops.Invoke(value, "__len__")) : seq.__len__();
+    int len = seq==null ? Ops.ToInt(Ops.InvokeProperty(value, "__len__")) : seq.__len__();
     if(step==1 || step==-1)
     { int diff = Math.Abs(len-slen);
       if(step==1)
@@ -768,7 +786,7 @@ public sealed class List : IMutableSequence, IList, IComparable, ICloneable, IRe
       else for(int i=0; start>stop; i++,start+=step) items[start] = seq.__getitem__(i);
     }
     else
-    { object getitem = Ops.GetMember(value, "__getitem__");
+    { object getitem = Ops.GetProperty(value, "__getitem__");
       if(step==1) for(int i=0; i<len; i++) items[i+start] = Ops.Call(getitem, i);
       else if(step==-1) for(int i=0; i<len; i++) items[start-i] = Ops.Call(getitem, i);
       else if(step>0) for(int i=0; start<stop; i++,start+=step) items[start] = Ops.Call(getitem, i);
@@ -965,7 +983,7 @@ public sealed class Slice : IRepresentable
   { int step  = (this.step==null ? 1 : Ops.ToInt(this.step));
     int start = (this.start==null ? step>0 ? 0 : length-1 : BoaOps.FixSliceIndex(Ops.ToInt(this.start), length));
     int stop  = (this.stop==null ? step>0 ? length : -1 : BoaOps.FixSliceIndex(Ops.ToInt(this.stop), length));
-    return new Tuple(start, stop, step);
+    return Tuple.Make(start, stop, step);
   }
 
   public override string ToString() { return __repr__(); }
@@ -1027,7 +1045,7 @@ public sealed class StringOps
                                              "length/precision of '#') mixed in format string");
 
       arggot = tup==null ? 1 : tup.items.Length;
-      if(tup==null && dict) getitem = Ops.GetMember(args, "__getitem__");
+      if(tup==null && dict) getitem = Ops.GetProperty(args, "__getitem__");
       else if(dict) throw Ops.TypeError("format requires a mapping");
       else if(argwant!=arggot) throw Ops.TypeError("incorrect number of arguments for string formatting "+
                                                    "(expected {0}, but got {1})", argwant, arggot);
@@ -1316,11 +1334,14 @@ public sealed class Tuple : ISequence, IList, IComparable, IRepresentable
       list.CopyTo(items, 0);
     }
   }
-  internal Tuple(ICollection col)
-  { items = new object[col.Count];
-    col.CopyTo(items, 0);
-  }
-  internal Tuple(params object[] items) { this.items=items; }
+  Tuple(object[] items) { this.items=items; }
+// TODO: fix the access issues with LCG
+public static Tuple Make(ICollection col)
+{ object[] items = new object[col.Count];
+  col.CopyTo(items, 0);
+  return new Tuple(items);
+}
+public static Tuple Make(params object[] items) { return new Tuple(items); }
 
   #region ISequence Members
   public object __add__(object o)
