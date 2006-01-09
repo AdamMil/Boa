@@ -270,6 +270,36 @@ public sealed class BoaOps
     return false;
   }
 
+  public static bool IsTrue(object value)
+  { switch(Convert.GetTypeCode(value))
+    { case TypeCode.Boolean: return (bool)value;
+      case TypeCode.Byte:    return (byte)value!=0;
+      case TypeCode.Char:    return (char)value!=0;
+      case TypeCode.Decimal: return (Decimal)value!=0;
+      case TypeCode.Double:  return (double)value!=0;
+      case TypeCode.Empty:   return false;
+      case TypeCode.Int16:   return (short)value!=0;
+      case TypeCode.Int32:   return (int)value!=0;
+      case TypeCode.Int64:   return (long)value!=0;
+      case TypeCode.Object:
+        if(value is Integer) return (Integer)value!=0;
+        if(value is Complex) return ComplexOps.NonZero((Complex)value);
+        if(value is ICollection) return ((ICollection)value).Count>0;
+        if(value is ISequence) return ((ISequence)value).__len__()>0;
+        object ret;
+        if(Ops.InvokeProperty(value, "__nonzero__", out ret)) return IsTrue(ret);
+        if(Ops.InvokeProperty(value, "__len__", out ret)) return Ops.ToInt(ret)>0;
+        return true;
+      case TypeCode.SByte:  return (sbyte)value!=0;
+      case TypeCode.Single: return (float)value!=0;
+      case TypeCode.String: return ((string)value).Length>0;
+      case TypeCode.UInt16: return (short)value!=0;
+      case TypeCode.UInt32: return (uint)value!=0;
+      case TypeCode.UInt64: return (ulong)value!=0;
+    }
+    return true;
+  }
+
   public static IEnumerator PrepareTupleAssignment(object value, int items)
   { if(value is ICollection)
     { ICollection col = (ICollection)value;
@@ -485,6 +515,7 @@ public interface IRepresentable
 { string __repr__();
 }
 
+// TODO: see if we can get rid of this
 public interface ISequence : IContainer
 { object __add__(object o);
   object __getitem__(int index);
