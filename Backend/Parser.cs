@@ -841,12 +841,15 @@ public sealed class Parser
       case Token.Del:
       { NextToken();
         ArrayList list = new ArrayList();
+        bool obt = bareTuples;
+        bareTuples = false;
         do
         { Node e = ParseExpression();
           if(!(e is VariableNode || e is MemberNode || e is TupleNode || e is IndexNode))
             SyntaxError("can't delete {0}", e.GetType());
           list.Add(e);
         } while(TryEat(Token.Comma));
+        bareTuples = obt;
         return new BoaDeleteNode((Node[])list.ToArray(typeof(Node)));
       }
       default: return ParseExprStmt();

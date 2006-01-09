@@ -25,6 +25,7 @@ using System.Reflection;
 using System.Reflection.Emit;
 using Scripting;
 
+// TODO: optimize by not using temporaries for constant expressions
 namespace Boa.Backend
 {
 
@@ -207,6 +208,8 @@ public sealed class BoaLanguage : Language
   }
   #endregion
 
+  public override void EmitIsTrue(CodeGenerator cg) { cg.EmitCall(typeof(BoaOps), "IsTrue"); }
+
   public override void EmitPackedArguments(CodeGenerator cg, Node[] args, int start, int length)
   { if(length==0) cg.EmitFieldGet(typeof(List), "Empty");
     else
@@ -217,6 +220,7 @@ public sealed class BoaLanguage : Language
 
   public override bool ExcludeFromImport(string name) { return name.StartsWith("_"); }
   public override bool IsHashableConstant(object value) { return value is Tuple || value is Slice; }
+  public override bool IsTrue(object value) { return BoaOps.IsTrue(value); }
 
   public override object PackArguments(object[] args, int start, int length)
   { return length==0 ? List.Empty : new List(args, start, length);
@@ -623,10 +627,16 @@ public sealed class CompareNode : Node
       // TODO: this assumes nodes don't clear the stack and don't interrupt...
       Expressions[0].Emit(cg);
       for(int i=0; i<Ops.Length; i++)
-      { if(i!=0) tmp.EmitGet(cg);
+      { if(i!=0)
+        { tmp.EmitGet(cg);
+          if(i==Ops.Length-1) cg.FreeLocalTemp(tmp);
+        }
         Expressions[i+1].Emit(cg);
-        if(i==0) tmp = cg.AllocLocalTemp(typeof(object));
-        tmp.EmitSet(cg);
+        if(i!=Ops.Length-1)
+        { cg.ILG.Emit(OpCodes.Dup);
+          if(i==0) tmp = cg.AllocLocalTemp(typeof(object));
+          tmp.EmitSet(cg);
+        }
 
         type = typeof(bool);
         Ops[i].EmitOp(cg, ref type);
@@ -644,9 +654,8 @@ public sealed class CompareNode : Node
       cg.ILG.MarkLabel(isfalse);
       EmitConstant(cg, false, ref etype);
       cg.ILG.MarkLabel(end);
-
-      cg.FreeLocalTemp(tmp);
     }
+    TailReturn(cg);
   }
 
   public readonly Node[] Expressions;
@@ -658,19 +667,16 @@ public sealed class CompareNode : Node
 public sealed class ForNode : LoopNode
 { public ForNode(Name[] names, Node expression, Node body, Node elze)
   { /*
-      try
-      { tmp e = Ops.GetEnumerator(<expression>);
-        BLOCK:
-        { if(!e.MoveNext())
-          { <else>;
-            break BLOCK;
-          }
-          (<name0>, <name1>, ...) = e.Current;
-          <body>
-          continue BLOCK;
+      tmp e = Ops.GetEnumerator(<expression>);
+      BLOCK:
+      { if(!e.MoveNext())
+        { <else>;
+          break BLOCK;
         }
+        (<name0>, <name1>, ...) = e.Current;
+        <body>
+        continue BLOCK;
       }
-      catch(StopIterationException) { }
     */
 
     Language lang = Options.Current.Language;
@@ -693,8 +699,7 @@ public sealed class ForNode : LoopNode
                                                        elze==null ? (Node)new BreakNode(blockname)
                                                                   : new BodyNode(elze, new BreakNode(blockname))),
                                             assign, body, new RestartNode(blockname)));
-    Node = new TryNode(new LocalBindNode(ename, new GetEnumeratorNode(expression), typeof(IEnumerator), block),
-                       new Except(new TypeNode(typeof(StopIterationException)), new PassNode()));
+    Node = new LocalBindNode(ename, new GetEnumeratorNode(expression), typeof(IEnumerator), block);
   }
 
   #region GetCurrentNode
@@ -725,7 +730,7 @@ public sealed class ForNode : LoopNode
     
     public override void Emit(CodeGenerator cg, ref Type etype)
     { Expression.Emit(cg);
-      cg.EmitCall(typeof(BoaOps), "GetEnumerator");
+      cg.EmitCall(typeof(BoaOps), "GetEnumerator", typeof(object));
       etype = typeof(IEnumerator);
     }
 
@@ -1347,19 +1352,17 @@ public sealed class UsingNode : ExceptionNode
 public sealed class WhileNode : LoopNode
 { public WhileNode(Node test, Node body) : this(test, body, null) { }
   public WhileNode(Node test, Node body, Node elze)
-  { /* try
-         while1:
-           if !test: break while1
-           body
-         [else]
-       catch StopIteration: pass
+  { /* while1:
+         if !test: break while1
+         body
+         continue while1
+       [else]
     */
     string name = GenerateName("while");
-    body = new BlockNode(name, new BodyNode(new IfNode(new UnaryOpNode(Operator.LogicalNot, test),
+    Node = new BlockNode(name, new BodyNode(new IfNode(new UnaryOpNode(Operator.LogicalNot, test),
                                                        new BreakNode(name)),
-                                            body));
-    if(elze!=null) body = new BodyNode(body, elze);
-    Node = new TryNode(body, new Except(new TypeNode(typeof(StopIterationException)), new PassNode()));
+                                            body, new RestartNode(name)));
+    if(elze!=null) Node = new BodyNode(Node, elze);
   }
 }
 #endregion
