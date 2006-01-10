@@ -185,16 +185,7 @@ public sealed class ArrayOps
       ret = new object[ic.Count];
       ic.CopyTo(ret, 0);
     }
-    else if(o is ISequence)
-    { ISequence s = (ISequence)o;
-      ret = new object[s.__len__()];
-      for(int i=0; i<ret.Length; i++) ret[i] = s.__getitem__(i);
-    }
-    else
-    { ret = new object[Ops.ToInt(Ops.InvokeProperty(o, "__len__"))];
-      object getitem = Ops.GetProperty(o, "__getitem__");
-      for(int i=0; i<ret.Length; i++) ret[i] = Ops.Call(getitem, i);
-    }
+    else throw new ArgumentException(Ops.TypeName(o)+" cannot be converted to an array");
     return ret;
   }
 }
@@ -216,6 +207,13 @@ public sealed class BoaHash : IHashCodeProvider
 #region BoaOps
 public sealed class BoaOps
 { BoaOps() { }
+
+  public static System.IO.Stream ExpectFile(object obj)
+  { System.IO.Stream stream = obj as System.IO.Stream;
+    if(stream==null)
+      throw new ArgumentException("Expected object of type System.IO.Stream, but received "+Ops.TypeName(obj));
+    return stream;
+  }
 
   public static int FixIndex(int index, int length)
   { if(index<0)
@@ -245,19 +243,45 @@ public sealed class BoaOps
   { if(o is string) e = new BoaCharEnumerator((string)o);
     else if(o is IEnumerable) e = ((IEnumerable)o).GetEnumerator();
     else if(o is IEnumerator) e = (IEnumerator)o;
-    else
-    { object iter;
-      if(Ops.InvokeProperty(o, "__iter__", out iter)) e = new IterEnumerator(iter);
-      else
-      { object len, getitem;
-        if(Ops.GetProperty(o, "__len__", out len) && Ops.GetProperty(o, "__getitem__", out getitem))
-          e = new SeqEnumerator(o);
-        else { e=null; return false; }
-      }
-    }
+    else { e=null; return false; }
     return true;
   }
   
+  public static object GetIndex(object obj, object index)
+  { Slice slice = index as Slice;
+    if(slice==null)
+    { string s = obj as string;
+      if(s!=null) return new string(s[FixIndex(Ops.ToInt(index), s.Length)], 1);
+      return Ops.GetIndex(obj, index);
+    }
+    else
+    { ISliceable seq = obj as ISliceable;
+      if(seq!=null) return seq.GetSlice(slice);
+      string s = obj as string;
+      if(s!=null) return StringOps.Slice(s, slice);
+      throw new ArgumentException("objects of type '"+Ops.TypeName(obj)+"' cannot be sliced");
+    }
+  }
+
+  public static void SetIndex(object value, object obj, object index)
+  { Slice slice = index as Slice;
+    if(slice==null) Ops.SetIndex(value, obj, index);
+    else
+    { IMutableSliceable seq = obj as IMutableSliceable;
+      if(seq==null) throw new ArgumentException("objects of type '"+Ops.TypeName(obj)+"' cannot be on the left hand "+
+                                                "side of slice assignment");
+      seq.SetSlice(slice, value);
+    }
+  }
+
+  public static ICollection GetSliceableCollection(object obj)
+  { ICollection col = obj as ICollection;
+    if(col!=null) return col;
+    string s = obj as string;
+    if(s!=null) return new StringOps.SequenceWrapper(s);
+    throw new ArgumentException("slice assignment expects a string or a collection");
+  }
+
   public static bool IsIn(object needle, object haystack)
   { IList list = haystack as IList;
     if(list!=null) return list.Contains(needle);
@@ -285,10 +309,6 @@ public sealed class BoaOps
         if(value is Integer) return (Integer)value!=0;
         if(value is Complex) return ComplexOps.NonZero((Complex)value);
         if(value is ICollection) return ((ICollection)value).Count>0;
-        if(value is ISequence) return ((ISequence)value).__len__()>0;
-        object ret;
-        if(Ops.InvokeProperty(value, "__nonzero__", out ret)) return IsTrue(ret);
-        if(Ops.InvokeProperty(value, "__len__", out ret)) return Ops.ToInt(ret)>0;
         return true;
       case TypeCode.SByte:  return (sbyte)value!=0;
       case TypeCode.Single: return (float)value!=0;
@@ -309,11 +329,8 @@ public sealed class BoaOps
     { string s = (string)value;
       if(s.Length==items) return new BoaCharEnumerator(s);
     }
-    else if(value is ISequence)
-    { ISequence seq = (ISequence)value;
-      if(seq.__len__()==items) return new SeqEnumerator(seq);
-    }
-    else if(Ops.ToInt(Ops.InvokeProperty(value, "__len__", Ops.EmptyArray)) == items) return new SeqEnumerator(value);
+    else throw new ArgumentException("objects of type '"+Ops.TypeName(value)+"' cannot be on the right hand side of "+
+                                     "a tuple assignment");
 
     throw Ops.ValueError("wrong number of values to unpack");
   }
@@ -322,245 +339,29 @@ public sealed class BoaOps
   { string str = Ops.Str(o);
     if(file==null) { Console.Write(str); return; }
 
-    IFile f = file as IFile;
-    if(f!=null) { f.write(str); return; }
-
-    System.IO.Stream stream = file as System.IO.Stream;
-    if(stream!=null)
-    { byte[] data = System.Text.Encoding.Default.GetBytes(str);
-      stream.Write(data, 0, data.Length);
-      return;
-    }
-
-    Ops.InvokeProperty(file, "write", str);
+    byte[] data = System.Text.Encoding.Default.GetBytes(str);
+    ExpectFile(file).Write(data, 0, data.Length);
   }
 
   public static void PrintNewline(object file)
   { if(file==null) { Console.WriteLine(); return; }
-
-    IFile f = file as IFile;
-    if(f!=null) { f.writebyte('\n'); return; }
-
-    System.IO.Stream stream = file as System.IO.Stream;
-    if(stream!=null) { stream.WriteByte((byte)'\n'); return; }
-
-    Ops.InvokeProperty(file, "write", "\n");
+    ExpectFile(file).WriteByte((byte)'\n');
   }
 
   public static List SequenceSlice(IList list, Slice slice)
-  { Tuple tup = slice.indices(list.Count);
-    return SequenceSlice(list, (int)tup.items[0], (int)tup.items[1], (int)tup.items[2]);
+  { int start, stop, step;
+    slice.GetIndices(list.Count, out start, out stop, out step);
+    return SequenceSlice(list, start, stop, step);
   }
 
   public static List SequenceSlice(IList list, int start, int stop, int step)
   { if(step<0 && start<=stop || step>0 && start>=stop) return new List();
     int sign = Math.Sign(step);
     List ret = new List((stop-start+step-sign)/step);
-    if(step<0) for(; start>stop; start+=step) ret.append(list[start]);
-    else for(; start<stop; start+=step) ret.append(list[start]);
+    if(step<0) for(; start>stop; start+=step) ret.Add(list[start]);
+    else for(; start<stop; start+=step) ret.Add(list[start]);
     return ret;
   }
-}
-#endregion
-
-#region Enumerators
-#region BoaCharEnumerator
-public class BoaCharEnumerator : IEnumerator
-{ public BoaCharEnumerator(string s) { str=s; index=-1; }
-
-  public object Current
-  { get
-    { if(index<0 || index>=str.Length) throw new InvalidOperationException();
-      return new string(str[index], 1);
-    }
-  }
-
-  public bool MoveNext()
-  { if(index>=str.Length-1) return false;
-    index++;
-    return true;
-  }
-
-  public void Reset() { index=-1; }
-  
-  string str;
-  int index;
-}
-#endregion
-
-#region IterEnumerator
-public class IterEnumerator : IEnumerator
-{ public IterEnumerator(object o)
-  { iter = o;
-    next = Ops.GetProperty(o, "next");
-    Ops.GetProperty(o, "reset", out reset);
-  }
-
-  public object Current
-  { get
-    { if(state!=State.IN) throw new InvalidOperationException();
-      return current;
-    }
-  }
-
-  public bool MoveNext()
-  { if(state==State.EOF) return false;
-    try { current=Ops.Call(next); state=State.IN; return true; }
-    catch(StopIterationException) { state=State.EOF; return false; }
-  }
-
-  public void Reset()
-  { if(reset==null) throw new NotImplementedException("this iterator does not implement reset()");
-    Ops.Call(reset);
-    state = State.BOF;
-  }
-
-  enum State : byte { BOF, IN, EOF }
-  object iter, current, next, reset;
-  State state;
-}
-#endregion
-
-#region SeqEnumerator
-public class SeqEnumerator : IEnumerator
-{ public SeqEnumerator(object seq)
-  { length  = Ops.ToInt(Ops.InvokeProperty(seq, "__length__"));
-    getitem = Ops.GetProperty(seq, "__getitem__");
-    index   = -1;
-  }
-
-  public object Current
-  { get
-    { if(index<0 || index>=length) throw new InvalidOperationException();
-      return current;
-    }
-  }
-  
-  public bool MoveNext()
-  { if(index>=length-1) return false;
-    current = Ops.Call(getitem, ++index);
-    return true;
-  }
-  
-  public void Reset() { index=-1; }
-
-  object getitem, current;
-  int index, length;
-}
-#endregion
-#endregion
-
-// TODO: redesign these interfaces
-#region Interfaces
-public interface ICallable
-{ object Call(params object[] args);
-}
-public interface IFancyCallable : ICallable
-{ object Call(object[] positional, string[] names, object[] values);
-}
-
-public interface IContainer
-{ int __len__();
-  bool __contains__(object value);
-}
-
-public interface IDescriptor
-{ object __get__(object instance);
-}
-
-public interface IDataDescriptor : IDescriptor
-{ void __set__(object instance, object value);
-  void __delete__(object instance);
-}
-
-public interface IFile
-{ bool canread { get; }
-  bool canseek { get; }
-  bool canwrite { get; }
-  bool closed { get; }
-  System.Text.Encoding encoding { get; set; }
-  int  length { get; }
-  void close();
-  void flush();
-  bool isatty();
-  string next();
-  byte[] read();
-  byte[] read(int bytes);
-  string readstr();
-  string readstr(int bytes);
-  int readbyte();
-  string readline();
-  string readline(int size);
-  List readlines();
-  List readlines(int sizehint);
-  int seek(int offset);
-  int seek(int offset, int whence);
-  int tell();
-  void truncate();
-  void truncate(int size);
-  void write(byte[] bytes);
-  void write(string str);
-  void writebyte(int value);
-  void writelines(object sequence);
-}
-
-public interface IHasAttributes
-{ List __attrs__();
-  object __getattr__(string key);
-  void __setattr__(string key, object value);
-  void __delattr__(string key);
-}
-
-public interface IRepresentable
-{ string __repr__();
-}
-
-// TODO: see if we can get rid of this
-public interface ISequence : IContainer
-{ object __add__(object o);
-  object __getitem__(int index);
-  object __getitem__(Slice slice);
-}
-
-public interface IMutableSequence : ISequence
-{ void __delitem__(int index);
-  void __delitem__(Slice slice);
-  void __setitem__(int index, object value);
-  void __setitem__(Slice slice, object value);
-}
-
-public interface IMapping : IContainer
-{ void clear();
-  object copy();
-  
-  object get(object key);
-  object get(object key, object defaultValue);
-
-  bool has_key(object key);
-  
-  //static object fromkeys(object seq);
-  //static object fromkeys(object seq, object value);
-
-  object pop(object key);
-  object pop(object key, object defaultValue);
-  Tuple popitem();
-  
-  object setdefault(object key);
-  object setdefault(object key, object defaultValue);
-  
-  void update(object dict);
-
-  List items();
-  List keys();
-  List values();
-
-  IEnumerator iteritems();
-  IEnumerator iterkeys();
-  IEnumerator itervalues();
-
-  void __delitem__(object key);
-  object __getitem__(object key);
-  void __setitem__(object key, object value);
 }
 #endregion
 
@@ -635,13 +436,7 @@ public sealed class Dict : IDictionary, IRepresentable
   #endregion
 
   #region IRepresentable Members
-
-  public string __repr__()
-  {
-    // TODO:  Add Dict.__repr__ implementation
-    return null;
-  }
-
+  public string ToCode() { throw new NotImplementedException(); }
   #endregion
 
   void MaybeConvert(int before)
@@ -662,195 +457,245 @@ public sealed class Dict : IDictionary, IRepresentable
 }
 #endregion
 
-// FIXME: don't allow __repr__ to go into an infinite loop with circular references
+#region BoaCharEnumerator
+public class BoaCharEnumerator : IEnumerator
+{ public BoaCharEnumerator(string s) { str=s; index=-1; }
+
+  public object Current
+  { get
+    { if(index<0 || index>=str.Length) throw new InvalidOperationException();
+      return new string(str[index], 1);
+    }
+  }
+
+  public bool MoveNext()
+  { if(index>=str.Length-1) return false;
+    index++;
+    return true;
+  }
+
+  public void Reset() { index = -1; }
+  
+  string str;
+  int index;
+}
+#endregion
+
+#region Interfaces
+public interface IRepresentable { string ToCode(); }
+
+public interface ISliceable : ICollection
+{ ICollection GetSlice(Slice slice);
+}
+
+public interface IMutableSliceable : ISliceable
+{ void SetSlice(Slice slice, object collection);
+  void RemoveAt(Slice slice);
+}
+#endregion
+
+// FIXME: don't allow ToCode to go into an infinite loop with circular references
 #region List
-public sealed class List : IMutableSequence, IList, IComparable, ICloneable, IRepresentable
+public sealed class List : IMutableSliceable, IList, IComparable, ICloneable, IRepresentable
 { public List() { items = new object[16]; }
   public List(int capacity) { items = new object[Math.Max(capacity, 4)]; }
-  public List(ICollection c) : this(c.Count) { c.CopyTo(items, 0); size=c.Count; }
-  public List(IEnumerator e) : this() { while(e.MoveNext()) append(e.Current); }
+  public List(ICollection c) : this(c.Count) { c.CopyTo(items, 0); count = c.Count; }
+  public List(IEnumerator e) : this() { while(e.MoveNext()) Add(e.Current); }
   public List(object o) : this(BoaOps.GetEnumerator(o)) { }
-  internal List(object[] arr) { items=arr; size=arr.Length; }
-  internal List(object[] arr, int length) { items=arr; size=length; }
+  internal List(object[] arr) { items=arr; count=arr.Length; }
+  internal List(object[] arr, int length) { items=arr; count=length; }
   internal List(object[] arr, int start, int length)
-  { if(start==0) { items=arr; size=length; }
+  { if(start==0) { items=arr; count=length; }
     else
-    { size  = length;
+    { count = length;
       items = new object[length];
       Array.Copy(arr, start, items, 0, length);
     }
   }
 
-  public void append(object item)
-  { ResizeTo(size+1);
-    items[size++] = item;
-  }
-
-  public int count(object item)
-  { int num=0;
-    for(int i=0; i<size; i++) if(items[i].Equals(item)) num++;
-    return num;
-  }
-
-  public void extend(object seq)
-  { List list = this;
-    if(!TryAppend(seq, ref list))
-    { IEnumerator e = BoaOps.GetEnumerator(seq);
-      while(e.MoveNext()) append(e.Current);
-    }
+  public void AddRange(ICollection col)
+  { ResizeTo(count+col.Count);
+    col.CopyTo(items, count);
+    count += col.Count;
+    version++;
   }
 
   public override bool Equals(object o) { return CompareTo(o)==0; }
-  public override int GetHashCode() { throw Ops.TypeError("list objects are unhashable"); }
+  public override int GetHashCode() { throw new InvalidOperationException("list objects are unhashable"); }
 
-  public int index(object item) { return IndexOrError(IndexOf(item, 0, size)); }
-  public int index(object item, int start)
-  { start = BoaOps.FixIndex(start, size);
-    return IndexOrError(IndexOf(item, start, size-start));
-  }
-  public int index(object item, int start, int end)
-  { start = BoaOps.FixIndex(start, size);
-    end   = BoaOps.FixIndex(end, size);
-    if(start>end) { int t=end; end=start; start=t; }
-    return IndexOrError(IndexOf(item, start, end-start));
+  public object Pop()
+  { if(count==0) throw new InvalidOperationException("Cannot pop from an empty list");
+    version++;
+    return items[--count];
   }
 
-  public void insert(int index, object o) { Insert(index==size ? index : BoaOps.FixIndex(index, size), o); }
-
-  public object pop()
-  { if(size==0) throw Ops.ValueError("pop off of empty list");
-    return items[--size];
+  public void RemoveRange(int start, int length)
+  { if(length!=0)
+    { start = BoaOps.FixIndex(start, count);
+      if(start<0 || start+length>count) throw new ArgumentException("indices out of range");
+      count -= length;
+      for(; start<count; start++) items[start] = items[start+length];
+      for(int i=0; i<length; i++) items[count+i] = null;
+      version++;
+    }
   }
 
-  public void remove(object item) { RemoveAt(index(item)); }
+  public void Reverse() { Array.Reverse(items, 0, count); version++; }
 
-  public void RemoveRange(int start, int count)
-  { if(start<0 || start+count>size) throw Ops.ValueError("RemoveRange(): indices out of range");
-    size -= count;
-    for(; start<size; start++) items[start] = items[start+count];
-    for(int i=0; i<count; i++) items[size+i] = null;
-  }
-  
-  public void reverse() { Array.Reverse(items, 0, size); }
+  public void Sort() { Array.Sort(items, 0, count, ScriptComparer.Default); version++; }
+  public void Sort(IProcedure cmpfunc) { Array.Sort(items, 0, count, new FunctionComparer(cmpfunc)); version++; }
 
-  public void sort() { Array.Sort(items, 0, size, ScriptComparer.Default); }
-  public void sort(IProcedure cmpfunc) { Array.Sort(items, 0, size, new FunctionComparer(cmpfunc)); }
-
-  public List sorted()
+  public List Sorted()
   { List ret = new List(this);
-    ret.sort();
+    ret.Sort();
     return ret;
   }
 
-  public List sorted(IProcedure cmpfunc)
+  public List Sorted(IProcedure cmpfunc)
   { List ret = new List(this);
-    ret.sort(cmpfunc);
+    ret.Sort(cmpfunc);
     return ret;
   }
 
   public Tuple ToTuple()
-  { object[] ti = new object[size];
+  { object[] ti = new object[count];
     items.CopyTo(ti, 0);
-    return new Tuple(ti);
+    return Tuple.Make(ti);
   }
 
-  #region IMutableSequence Members
-  public object __add__(object o)
-  { List list=null;
-    if(!TryAppend(o, ref list))
-      throw Ops.TypeError("can not concatenate list to ('{0}')", Ops.TypeName(o));
-    return list;
+  #region IMutableSliceable Members
+  public ICollection GetSlice(Slice slice)
+  { int start, stop, step;
+    slice.GetIndices(count, out start, out stop, out step);
+    if(step==1)
+    { object[] arr = new object[stop-start];
+      Array.Copy(items, start, arr, 0, stop-start);
+      return new List(arr);
+    }
+    else if(step==-1)
+    { object[] arr = new object[start-stop];
+      for(int i=0; i<arr.Length; i++) arr[i] = items[start-i];
+      return new List(arr);
+    }
+    else return BoaOps.SequenceSlice(this, start, stop, step);
   }
 
-  public bool __contains__(object value) { return IndexOf(value, 0, size) != -1; }
+  public void SetSlice(Slice slice, object collection)
+  { ICollection col = BoaOps.GetSliceableCollection(collection);
+    int start, stop, step;
+    slice.GetIndices(count, out start, out stop, out step);
+    int sign = Math.Sign(step), sliceLen = (stop-start+step-sign)/step, colLen = col.Count;
 
-  public void __delitem__(int index) { RemoveAt(BoaOps.FixIndex(index, size)); }
-  public void __delitem__(Slice slice)
-  { Tuple tup = slice.indices(size);
-    int start=(int)tup.items[0], stop=(int)tup.items[1], step=(int)tup.items[2];
+    if(step==1)
+    { if(colLen<sliceLen) RemoveRange(start, sliceLen-colLen);
+      else if(colLen>sliceLen) InsertRange(start, colLen-sliceLen);
+      col.CopyTo(items, start);
+    }
+    else if(step==-1)
+    { start = stop+1;
+      if(colLen<sliceLen) RemoveRange(start, sliceLen-colLen);
+      else if(colLen>sliceLen) InsertRange(start, colLen-sliceLen);
+      items.CopyTo(items, start);
+      Array.Reverse(items, start, sliceLen);
+    }
+    else if(colLen!=sliceLen)
+      throw new ArgumentException(string.Format("Can't assign sequence of size {0} to extended slice of size {1}",
+                                                colLen, sliceLen));
+    else
+    { IList list = col as IList;
+      if(list!=null)
+      { if(step>0) for(int i=0; start<stop; i++,start+=step) items[start] = list[i];
+        else for(int i=0; start>stop; i++,start+=step) items[start] = list[i];
+      }
+      else
+      { object[] arr = new object[colLen];
+        col.CopyTo(arr, 0);
+        if(step>0) for(int i=0; start<stop; i++,start+=step) items[start] = arr[i];
+        else for(int i=0; start>stop; i++,start+=step) items[start] = arr[i];
+      }
+    }
+
+    version++;
+  }
+
+  public void RemoveAt(Slice slice)
+  { int start, stop, step;
+    slice.GetIndices(count, out start, out stop, out step);
     if(step<0 && start<=stop || step>0 && start>=stop) return;
 
     if(step==1) RemoveRange(start, stop-start);
     else if(step==-1) RemoveRange(stop+1, start-stop);
     else
-    { int off=1;
-      for(int i=start,next=start+step; i<size; i++)
-      { if(i+off==next) { if((next+=step)>=stop) next=0; else off++; }
-        items[i] = items[i+off];
+    { int offset = 1;
+      for(int i=start,next=start+step; i<count; i++)
+      { if(i+offset==next)
+        { next += step;
+          if(next>=stop) next = 0;
+          else offset++;
+        }
+        items[i] = items[i+offset];
       }
-      size -= off;
+      count -= offset;
     }
-  }
-
-  public object __getitem__(int index) { return items[BoaOps.FixIndex(index, size)]; }
-  public object __getitem__(Slice slice) { return BoaOps.SequenceSlice(this, slice); }
-
-  public int __len__() { return size; }
-
-  public void __setitem__(int index, object value) { items[BoaOps.FixIndex(index, size)] = value; }
-  public void __setitem__(Slice slice, object value)
-  { Tuple tup = slice.indices(size);
-    int start=(int)tup.items[0], stop=(int)tup.items[1], step=(int)tup.items[2];
-    if(step<0 && start<=stop || step>0 && start>=stop) return;
-    int sign=Math.Sign(step), slen=(stop-start+step-sign)/step;
-
-    ISequence seq = value as ISequence;
-    if(seq==null && value is string) seq = new StringOps.SequenceWrapper((string)value);
-
-    int len = seq==null ? Ops.ToInt(Ops.InvokeProperty(value, "__len__")) : seq.__len__();
-    if(step==1 || step==-1)
-    { int diff = Math.Abs(len-slen);
-      if(step==1)
-      { if(len<slen) RemoveRange(start+len, diff);
-        else if(len>slen) Insert(start+slen, diff);
-      }
-      else if(len>slen) { Insert(stop+1, diff); start += diff; }
-      else if(len<slen) { RemoveRange(stop+1, diff); start -= diff; }
-    }
-    else if(len!=slen)
-      throw Ops.ValueError("can't assign sequence of size {0} to extended slice of size {1}", len, slen);
-
-    if(seq!=null)
-    { if(step==1) for(int i=0; i<len; i++) items[i+start] = seq.__getitem__(i);
-      else if(step==-1) for(int i=0; i<len; i++) items[start-i] = seq.__getitem__(i);
-      else if(step>0) for(int i=0; start<stop; i++,start+=step) items[start] = seq.__getitem__(i);
-      else for(int i=0; start>stop; i++,start+=step) items[start] = seq.__getitem__(i);
-    }
-    else
-    { object getitem = Ops.GetProperty(value, "__getitem__");
-      if(step==1) for(int i=0; i<len; i++) items[i+start] = Ops.Call(getitem, i);
-      else if(step==-1) for(int i=0; i<len; i++) items[start-i] = Ops.Call(getitem, i);
-      else if(step>0) for(int i=0; start<stop; i++,start+=step) items[start] = Ops.Call(getitem, i);
-      else for(int i=0; start>stop; i++,start+=step) items[start] = Ops.Call(getitem, i);
-    }
+    
+    version++;
   }
   #endregion
 
   #region IList Members
-  public bool IsReadOnly { get { return false; } }
   public object this[int index]
   { get
-    { if(index<0 || index>=size) throw new IndexOutOfRangeException();
+    { index = BoaOps.FixIndex(index, count);
+      if(index<0 || index>=count) throw new IndexOutOfRangeException();
       return items[index];
     }
     set
-    { if(index<0 || index>=size) throw new IndexOutOfRangeException();
+    { index = BoaOps.FixIndex(index, count);
+      if(index<0 || index>=count) throw new IndexOutOfRangeException();
       items[index] = value;
+      version++;
     }
   }
 
-  public void RemoveAt(int index)
-  { if(index<0 || index>=size) throw new IndexOutOfRangeException();
-    size--;
-    for(; index<size; index++) items[index] = items[index+1];
-    items[size] = null;
+  public bool IsFixedSize { get { return false; } }
+  public bool IsReadOnly { get { return false; } }
+
+  public int Add(object value)
+  { version++;
+    ResizeTo(count+1);
+    items[count] = value;
+    return count++;
+  }
+
+  public bool Contains(object value) { return IndexOf(value, 0, count) != -1; }
+
+  public void Clear()
+  { if(count!=0)
+    { count = 0;
+      version++;
+    }
+  }
+
+  public int IndexOf(object value) { return IndexOf(value, 0, count); }
+  public int IndexOf(object value, int start)
+  { start = BoaOps.FixIndex(start, count);
+    return IndexOf(value, start, count-start);
+  }
+  public int IndexOf(object value, int start, int length)
+  { start = BoaOps.FixIndex(start, count);
+    int end = start+length;
+    if(start<0 || end>count) throw new ArgumentOutOfRangeException();
+    for(; start<end; start++) if(Ops.Compare(items[start], value)==0) return start;
+    return -1;
   }
 
   public void Insert(int index, object value)
-  { if(index<0 || index>size) throw new IndexOutOfRangeException();
-    ResizeTo(size+1);
-    for(int i=size++; i>index; i--) items[i] = items[i-1];
+  { index = BoaOps.FixIndex(index, count);
+    if(index<0 || index>count) throw new IndexOutOfRangeException();
+    ResizeTo(count+1);
+    for(int i=count++; i>index; i--) items[i] = items[i-1];
     items[index] = value;
+    version++;
   }
 
   public void Remove(object value)
@@ -858,59 +703,59 @@ public sealed class List : IMutableSequence, IList, IComparable, ICloneable, IRe
     if(index!=-1) RemoveAt(index);
   }
 
-  public bool Contains(object value) { return __contains__(value); }
-  public void Clear() { size=0; }
-
-  public int IndexOf(object value) { return IndexOf(value, 0, size); }
-  public int IndexOf(object value, int start, int length)
-  { int end = start+length;
-    if(start<0 || end>size) throw new ArgumentOutOfRangeException();
-    for(; start<end; start++) if(Ops.Compare(items[start], value)==0) return start;
-    return -1;
+  public void RemoveAt(int index)
+  { index = BoaOps.FixIndex(index, count);
+    if(index<0 || index>=count) throw new IndexOutOfRangeException();
+    count--;
+    for(; index<count; index++) items[index] = items[index+1];
+    items[count] = null;
+    version++;
   }
-
-  public int Add(object value) { append(value); return size-1; }
-  public bool IsFixedSize { get { return false; } }
   #endregion
 
   #region ICollection Members
   public bool IsSynchronized { get { return false; } }
-  public int Count { get { return size; } }
-  public void CopyTo(Array array, int index) { Array.Copy(items, 0, array, index, size); }
+  public int Count { get { return count; } }
+  public void CopyTo(Array array, int index) { Array.Copy(items, 0, array, index, count); }
   public object SyncRoot { get { return this; } }
   #endregion
 
   #region IEnumerable Members
   public IEnumerator GetEnumerator() { return new ListEnumerator(this); }
   
-  class ListEnumerator : IEnumerator
-  { public ListEnumerator(List list) { this.list=list; index=-1; }
+  sealed class ListEnumerator : IEnumerator
+  { public ListEnumerator(List list) { this.list=list; index=-1; version=list.version; }
 
-    public void Reset() { index=-1; }
+    public void Reset()
+    { if(list.version!=version) throw new InvalidOperationException("The collection has been modified.");
+      index = -1;
+    }
 
     public object Current
     { get
-      { if(index<0 || index>=list.size) throw new InvalidOperationException();
-        return list.items[index];
+      { if(index<0) throw new InvalidOperationException();
+        return current;
       }
     }
 
     public bool MoveNext()
-    { if(index>=list.size-1) return false;
-      index++;
+    { if(list.version!=version) throw new InvalidOperationException("The collection has been modified.");
+      if(index==list.count-1 || index==-2) return false;
+      current = list.items[++index];
       return true;
     }
 
     List list;
-    int index;
+    object current;
+    int index, version;
   }
   #endregion
 
   #region IComparable Members
-  public int CompareTo(object o)
+  public int CompareTo(object o) // TODO: is this right?
   { List list = o as List;
-    if(list!=null) return ArrayOps.Compare(items, size, list.items, list.size);
-    else return Ops.TypeName(this).CompareTo(Ops.TypeName(o));
+    if(list!=null) return ArrayOps.Compare(items, count, list.items, list.count);
+    else return Ops.Compare(this, o);
   }
   #endregion
 
@@ -919,10 +764,10 @@ public sealed class List : IMutableSequence, IList, IComparable, ICloneable, IRe
   #endregion
 
   #region IRepresentable Members
-  public string __repr__()
+  public string ToCode()
   { System.Text.StringBuilder sb = new System.Text.StringBuilder();
     sb.Append('[');
-    for(int i=0; i<size; i++)
+    for(int i=0; i<count; i++)
     { if(i>0) sb.Append(", ");
       sb.Append(Ops.Repr(items[i]));
     }
@@ -931,23 +776,20 @@ public sealed class List : IMutableSequence, IList, IComparable, ICloneable, IRe
   }
   #endregion
 
-  public override string ToString() { return __repr__(); }
-  
+  public override string ToString() { return ToCode(); }
+
+  public static readonly List Empty = new List(); // FIXME: make this list immutable
+
   sealed class FunctionComparer : IComparer
-  { public FunctionComparer(IProcedure func) { this.func=func; }
+  { public FunctionComparer(IProcedure func) { this.func = func; }
     public int Compare(object x, object y) { return Ops.ToInt(func.Call(x, y)); }
     IProcedure func;
   }
 
-  int IndexOrError(int index)
-  { if(index<0) throw Ops.ValueError("item not in list");
-    return index;
-  }
-
-  void Insert(int start, int count)
-  { ResizeTo(size+count);
-    for(int i=size-1; i>=start; i--) items[i+count] = items[i];
-    size += count;
+  void InsertRange(int start, int length)
+  { ResizeTo(count+length);
+    for(int i=count-1; i>=start; i--) items[i+length] = items[i];
+    count += length;
   }
 
   void ResizeTo(int capacity)
@@ -955,47 +797,23 @@ public sealed class List : IMutableSequence, IList, IComparable, ICloneable, IRe
     { int len = Math.Max(items.Length, 4);
       while(len<capacity) len*=2;
       object[] arr = new object[len];
-      Array.Copy(items, arr, size);
+      Array.Copy(items, arr, count);
       items = arr;
     }
   }
 
-  bool TryAppend(object o, ref List list)
-  { ICollection col = o as ICollection;
-    if(col!=null)
-    { if(list==null)
-      { list = new List(size+col.Count);
-        Array.Copy(items, list.items, size);
-      }
-      else list.ResizeTo(size+col.Count);
-      col.CopyTo(list.items, size);
-      list.size = size+col.Count;
-    }
-    else
-    { IEnumerator e;
-      if(BoaOps.GetEnumerator(o, out e))
-      { if(list==null) list = new List(this);
-        while(e.MoveNext()) list.append(e.Current);
-      }
-      else return false;
-    }
-    return true;
-  }
-
-  internal static readonly List Empty = new List(Ops.EmptyArray);
-
   object[] items;
-  int size;
+  int count, version;
 }
 #endregion
 
 #region Slice
 public sealed class Slice : IRepresentable
 { public Slice() { }
-  public Slice(object stop) { this.stop=stop; }
+  public Slice(object stop) { this.stop = stop; }
   public Slice(object start, object stop) { this.start=start; this.stop=stop; }
   public Slice(object start, object stop, object step)
-  { if(step!=null && Ops.ToInt(step)==0) throw Ops.ValueError("slice(): step cannot be zero");
+  { if(step!=null && Ops.ToInt(step)==0) throw new ArgumentException("slice(): step cannot be zero");
     this.start=start; this.stop=stop; this.step=step;
   }
 
@@ -1010,16 +828,21 @@ public sealed class Slice : IRepresentable
   { return (start==null ? 0 : start.GetHashCode()) ^ (stop==null ? 0 : stop.GetHashCode());
   }
 
-  public Tuple indices(int length)
-  { int step  = (this.step==null ? 1 : Ops.ToInt(this.step));
-    int start = (this.start==null ? step>0 ? 0 : length-1 : BoaOps.FixSliceIndex(Ops.ToInt(this.start), length));
-    int stop  = (this.stop==null ? step>0 ? length : -1 : BoaOps.FixSliceIndex(Ops.ToInt(this.stop), length));
+  public Tuple GetIndices(int length)
+  { int start, stop, step;
+    GetIndices(length, out start, out stop, out step);
     return Tuple.Make(start, stop, step);
   }
 
-  public override string ToString() { return __repr__(); }
+  public void GetIndices(int length, out int start, out int stop, out int step)
+  { step  = (this.step==null ? 1 : Ops.ToInt(this.step));
+    start = (this.start==null ? step>0 ? 0 : length-1 : BoaOps.FixSliceIndex(Ops.ToInt(this.start), length));
+    stop  = (this.stop==null ? step>0 ? length : -1 : BoaOps.FixSliceIndex(Ops.ToInt(this.stop), length));
+  }
 
-  public string __repr__()
+  public override string ToString() { return ToCode(); }
+
+  public string ToCode()
   { return string.Format("slice({0}, {1}, {2})", Ops.Repr(start), Ops.Repr(stop), Ops.Repr(step));
   }
 
@@ -1032,25 +855,69 @@ public sealed class StringOps
 { StringOps() { }
 
   #region SequenceWrapper
-  public class SequenceWrapper : ISequence
+  public class SequenceWrapper : ISliceable, ICollection, IList
   { public SequenceWrapper(string str) { this.str = str; }
 
-    #region ISequence Members
-    public object __add__(object o) { throw Ops.TypeError("strings are immutable"); }
-    public object __getitem__(int index) { return new string(str[BoaOps.FixIndex(index, str.Length)], 1); }
-    object ISequence.__getitem__(Slice slice) { return StringOps.Slice(str, slice); }
-    public int __len__() { return str.Length; }
-    public bool __contains__(object value)
-    { if(value is string)
-      { string needle = (string)value;
-        return (needle.Length==0 ? str.IndexOf(needle[0]) : str.IndexOf(needle)) != -1;
+    #region ISliceable Members
+    public ICollection GetSlice(Slice slice)
+    { int start, stop, step;
+      slice.GetIndices(str.Length, out start, out stop, out step);
+      if(step==1)
+      { string[] arr = new string[stop-start];
+        for(int i=0; i<arr.Length; i++) arr[i] = new string(str[i], 1);
+        return arr;
       }
-      if(value is char) return str.IndexOf((char)value)!=-1;
-      return false;
+      else if(step==-1)
+      { string[] arr = new string[start-stop];
+        for(int i=0; i<arr.Length; i++) arr[i] = new string(str[start-i], 1);
+        return arr;
+      }
+      else return BoaOps.SequenceSlice(this, start, stop, step);
     }
     #endregion
     
-    string str;
+    #region ICollection Members
+    public int Count { get { return str.Length; } }
+    public bool IsSynchronized { get { return true; } }
+    public object SyncRoot { get { return str; } }
+
+    public void CopyTo(Array array, int index)
+    { for(int i=0; i<str.Length; i++) array.SetValue(new string(str[i], 1), i);
+    }
+    #endregion
+
+    #region IEnumerable Members
+    public IEnumerator GetEnumerator() { return new BoaCharEnumerator(str); }
+    #endregion
+
+    #region IList Members
+    public object this[int index]
+    { get { return new string(str[BoaOps.FixIndex(index, str.Length)], 1); }
+      set { throw ImmutableError(); }
+    }
+
+    public bool IsFixedSize { get { return true; } }
+    public bool IsReadOnly { get { return true; } }
+
+    public int Add(object value) { throw ImmutableError(); }
+    public void Clear() { throw ImmutableError(); }
+    public bool Contains(object value) { return IndexOf(value) != -1; }
+
+    public int IndexOf(object value)
+    { string s = value as string;
+      if(s!=null) return str.IndexOf(s);
+      else if(value is char) return str.IndexOf((char)value);
+      else return -1;
+    }
+
+    public void Insert(int index, object value) { throw ImmutableError(); }
+    public void Remove(object value) { throw ImmutableError(); }
+    public void RemoveAt(int index) { throw ImmutableError(); }
+    #endregion
+
+    readonly string str;
+    
+    static InvalidOperationException ImmutableError() { return new InvalidOperationException("strings are immutable"); }
   }
 
   #endregion
@@ -1232,6 +1099,7 @@ public sealed class StringOps
   
   public static string Multiply(string str, object times)
   { int n = Ops.ToInt(times);
+    if(str.Length==1) return new string(str[0], n);
     StringBuilder sb = new StringBuilder(str.Length*n);
     while(n-->0) sb.Append(str);
     return sb.ToString();
@@ -1240,12 +1108,12 @@ public sealed class StringOps
   public static string PrintF(string format, object args) { return new StringFormatter(format, args).Format(); }
 
   public static string Slice(string s, Slice slice)
-  { Tuple tup = slice.indices(s.Length);
-    int start=(int)tup.items[0], stop=(int)tup.items[1], step=(int)tup.items[2], sign=Math.Sign(step);
+  { int start, stop, step;
+    slice.GetIndices(s.Length, out start, out stop, out step);
     if(step<0 && start<=stop || step>0 && start>=stop) return string.Empty;
     if(step==1) return s.Substring(start, stop-start);
     else
-    { StringBuilder sb = new StringBuilder((stop-start+step-sign)/step);
+    { StringBuilder sb = new StringBuilder((stop-start+step-Math.Sign(step))/step);
       if(step<0) for(; start>stop; start+=step) sb.Append(s[start]);
       else for(; start<stop; start+=step) sb.Append(s[start]);
       return sb.ToString();
@@ -1349,9 +1217,9 @@ public sealed class StringOps
 
 #endregion
 
-// FIXME: don't allow __repr__ to go into an infinite loop with circular references
+// FIXME: don't allow ToCode to go into an infinite loop with circular references
 #region Tuple
-public sealed class Tuple : ISequence, IList, IComparable, IRepresentable
+public sealed class Tuple : ISliceable, IList, IComparable, IRepresentable
 { public Tuple() { items = Ops.EmptyArray; }
   public Tuple(object obj)
   { ICollection col = obj as ICollection;
@@ -1374,22 +1242,21 @@ public static Tuple Make(ICollection col)
 }
 public static Tuple Make(params object[] items) { return new Tuple(items); }
 
-  #region ISequence Members
-  public object __add__(object o)
-  { Tuple tup = o as Tuple;
-    if(tup==null) throw Ops.TypeError("cannot concatenate tuple to {0}", Ops.TypeName(o));
-    object[] arr = new object[items.Length+tup.items.Length];
-    items.CopyTo(arr, 0);
-    tup.items.CopyTo(arr, items.Length);
-    return new Tuple(arr);
-  }
-
-  public object __getitem__(int index) { return items[BoaOps.FixIndex(index, items.Length)]; }
-  public object __getitem__(Slice slice) { return BoaOps.SequenceSlice(this, slice); }
-  public int __len__() { return items.Length; }
-  public bool __contains__(object value)
-  { for(int i=0; i<items.Length; i++) if(Ops.Compare(items[i], value)==0) return true;
-    return false;
+  #region ISliceable Members
+  public ICollection GetSlice(Slice slice)
+  { int start, stop, step;
+    slice.GetIndices(items.Length, out start, out stop, out step);
+    if(step==1)
+    { object[] arr = new object[stop-start];
+      Array.Copy(items, start, arr, 0, stop-start);
+      return new Tuple(arr);
+    }
+    else if(step==-1)
+    { object[] arr = new object[start-stop];
+      for(int i=0; i<arr.Length; i++) arr[i] = items[start-i];
+      return new Tuple(arr);
+    }
+    else return BoaOps.SequenceSlice(this, start, stop, step);
   }
   #endregion
 
@@ -1410,12 +1277,7 @@ public static Tuple Make(params object[] items) { return new Tuple(items); }
   public bool IsReadOnly { get { return true; } }
 
   public int Add(object o) { throw ImmutableError(); }
-
-  public bool Contains(object o)
-  { foreach(object i in items) if(Ops.AreEqual(o, i)) return true;
-    return false;
-  }
-  
+  public bool Contains(object o) { return IndexOf(o) != -1; }
   public void Clear() { throw ImmutableError(); }
 
   public int IndexOf(object o)
@@ -1433,15 +1295,15 @@ public static Tuple Make(params object[] items) { return new Tuple(items); }
   #endregion
 
   #region IComparable Members
-  public int CompareTo(object o)
+  public int CompareTo(object o) // TODO: is this right?
   { Tuple tup = o as Tuple;
     if(tup!=null) return ArrayOps.Compare(items, items.Length, tup.items, tup.items.Length);
-    else return Ops.TypeName(this).CompareTo(Ops.TypeName(o));
+    else return Ops.Compare(this, o);
   }
   #endregion
 
   #region IRepresentable Members
-  public string __repr__()
+  public string ToCode()
   { System.Text.StringBuilder sb = new System.Text.StringBuilder();
     sb.Append('(');
     for(int i=0; i<items.Length; i++)
@@ -1459,20 +1321,20 @@ public static Tuple Make(params object[] items) { return new Tuple(items); }
   public override int GetHashCode()
   { if(hashCode!=null) return (int)hashCode;
 
-    int hash=0;
+    int hash = 0;
     foreach(object o in items) if(o!=null) hash ^= o.GetHashCode();
     hashCode = hash;
     return hash;
   }
 
-  public override string ToString() { return __repr__(); }
+  public override string ToString() { return ToCode(); }
 
   public static readonly Tuple Empty = new Tuple();
   
   public readonly object[] items; // FIXME: this should be internal
   object hashCode;
 
-  static Exception ImmutableError() { return new InvalidOperationException("Tuples cannot be modified"); }
+  static InvalidOperationException ImmutableError() { return new InvalidOperationException("Tuples are immutable"); }
 }
 #endregion
 

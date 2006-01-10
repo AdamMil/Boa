@@ -128,6 +128,7 @@ public sealed class Parser
     }
   }
 
+  bool InFunction { get { return funcDepth>0; } }
   bool InLoop { get { return loopDepth>0; } }
 
   #region GetEscapeChar
@@ -355,12 +356,14 @@ public sealed class Parser
 
   // def_stmt := 'def' <identifier> '(' <param_list> ')' ':' <suite>
   Node ParseDef()
-  { Eat(Token.Def);
+  { funcDepth++;
+    Eat(Token.Def);
     string name = ParseIdentifier();
     Eat(Token.LParen);
     Parameter[] parms = ParseParamList(Token.RParen);
     Eat(Token.RParen);
     Node func = new LambdaNode(name, parms, new BlockNode("*FUNCTION*", ParseSuite(new LiteralNode(null))));
+    funcDepth--;
     return new SetNode(name, func, SetType.Set);
   }
 
@@ -468,7 +471,10 @@ public sealed class Parser
     if(TryEat(Token.From))
     { string module = ParseDotted();
       Eat(Token.Import);
-      if(TryEat(Token.Asterisk)) stmt = new ImportFromNode(module, null, null);
+      if(TryEat(Token.Asterisk))
+      { if(InFunction) SyntaxError("'from ... import *' cannot be used within a function");
+        stmt = new ImportFromNode(module, null, null, !InFunction);
+      }
       else
       { Expect(Token.Identifier);
         ArrayList names=new ArrayList(), asNames=new ArrayList();
@@ -481,7 +487,7 @@ public sealed class Parser
           else asNames.Add(null);
         } while(token!=Token.EOL && TryEat(Token.Comma));
         stmt = new ImportFromNode(module, (string[])names.ToArray(typeof(string)),
-                                  (string[])asNames.ToArray(typeof(string)));
+                                  (string[])asNames.ToArray(typeof(string)), !InFunction);
       }
     }
     else
@@ -519,7 +525,8 @@ public sealed class Parser
   // lambda_body := <simple_stmt> (';' <simple_stmt>)* <lambda_end>
   // lambda_end := EOL | ',' | ')' | ']' | '}' | 'for'
   Node ParseLambda()
-  { Eat(Token.Lambda);
+  { funcDepth++;
+    Eat(Token.Lambda);
     Parameter[] parms = ParseParamList(Token.Colon);
     Eat(Token.Colon);
 
@@ -543,6 +550,7 @@ public sealed class Parser
     done:
     if(list.Count==0) Unexpected(token);
     Node body = list.Count==1 ? (Node)list[0] : new BodyNode((Node[])list.ToArray(typeof(Node)));
+    funcDepth--;
     return new LambdaNode(parms, new BlockNode("*FUNCTION*", body));
   }
 
@@ -1246,9 +1254,8 @@ public sealed class Parser
   }
   #endregion
 
-  void SyntaxError(string format, params object[] args)
-  { throw Ops.SyntaxError("{0}({1},{2}): {3}", sourceFile, line, column, string.Format(format, args));
-  }
+  void SyntaxError(string format, params object[] args) { SyntaxError(string.Format(format, args)); }
+  void SyntaxError(string message) { throw Ops.SyntaxError("{0}({1},{2}): {3}", sourceFile, line, column, message); }
 
   bool TryEat(Token type)
   { if(token==type) { NextToken(); return true; }
@@ -1263,7 +1270,7 @@ public sealed class Parser
   string     sourceFile, data;
   Token      token=Token.EOL, nextToken=Token.None;
   object     value, nextValue;
-  int        line=1, column=1, pos, indent, loopDepth;
+  int        line=1, column=1, pos, indent, funcDepth, loopDepth;
   char       lastChar;
   bool       bareTuples=true, wantEOL=true;
   

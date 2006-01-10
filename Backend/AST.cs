@@ -182,6 +182,7 @@ public sealed class BoaLanguage : Language
       { cg.ILG.Emit(OpCodes.Dup);
         cg.EmitConstantObject(o);
         cg.EmitCall(mi);
+        cg.ILG.Emit(OpCodes.Pop);
       }
     }
     else if(value is Dict)
@@ -242,7 +243,7 @@ public sealed class BoaLanguage : Language
       case TypeCode.Empty: return "null";
       case TypeCode.Int64: case TypeCode.UInt64: return obj.ToString()+'L';
       case TypeCode.Object:
-        if(obj is IRepresentable) return ((IRepresentable)obj).__repr__();
+        if(obj is IRepresentable) return ((IRepresentable)obj).ToCode();
         if(obj is Array) return ArrayOps.Repr((Array)obj);
         break;
       case TypeCode.Single: return ((float)obj).ToString("R");
@@ -516,8 +517,18 @@ public sealed class AssignNode : SetNode
 
   protected override void Assign(Node lhs, object value)
   { TupleNode tn = lhs as TupleNode;
-    if(tn==null) base.Assign(lhs, value);
-    throw new NotImplementedException("tuple assignment");
+    if(tn!=null)
+    { IEnumerator e = BoaOps.PrepareTupleAssignment(value, tn.Expressions.Length);
+      for(int i=0; i<tn.Expressions.Length; i++)
+      { e.MoveNext();
+        Assign(tn.Expressions[i], e.Current);
+      }
+    }
+    else
+    { IndexNode idx = lhs as IndexNode;
+      if(idx!=null) idx.Assign(value);
+      else base.Assign(lhs, value);
+    }
   }
 
   protected override void EmitSet(CodeGenerator cg, Node lhs, Type onStack)
@@ -540,24 +551,6 @@ public sealed class AssignNode : SetNode
   { TupleNode tn = lhs as TupleNode;
     if(tn!=null) foreach(Node n in tn.Expressions) UpdateNames(names, ref i, n);
     else base.UpdateNames(names, ref i, lhs);
-  }
-
-  sealed class NameWalker : IWalker
-  { public string[] GetNames()
-    { string[] ret = (string[])names.ToArray(typeof(string));
-      names.Clear();
-      return ret;
-    }
-
-    public void PostWalk(Node n) { }
-
-    public bool Walk(Node n)
-    { VariableNode vn = n as VariableNode;
-      if(vn!=null) names.Add(vn.Name.String);
-      return true;
-    }
-
-    ArrayList names = new ArrayList();
   }
 
   void EmitTupleAssignment(CodeGenerator cg, TupleNode lhs, object value)
@@ -880,9 +873,9 @@ public sealed class ImportNode : WrapperNode
 { public ImportNode(string[] names, string[] asNames)
   { Node[] assigns = new Node[names.Length];
     for(int i=0; i<names.Length; i++)
-      assigns[i] = new SetNode(new VariableNode(names[i]),
-                               new ImportOneNode(asNames[i]==null ? names[i] : asNames[i], 
-                                                 asNames[i]==null));
+      assigns[i] = new AssignNode(new VariableNode(names[i]),
+                                  new ImportOneNode(asNames[i]==null ? names[i] : asNames[i], 
+                                                    asNames[i]==null));
     Node = new BodyNode(assigns);
   }
 
@@ -910,22 +903,36 @@ public sealed class ImportNode : WrapperNode
 #endregion
 
 #region ImportFromNode
-public sealed class ImportFromNode : Node
-{ public ImportFromNode(string module, string[] names, string[] asNames)
-  { Module=module; Names=names; AsNames=asNames;
-    for(int i=0; i<AsNames.Length; i++) if(AsNames[i]==null) AsNames[i] = Names[i];
+public sealed class ImportFromNode : SetNodeBase
+{ public ImportFromNode(string module, string[] names, string[] asNames, bool topLevel)
+  { Module=module; Names=names; TopLevel=topLevel;
+    AsNames = asNames==null || asNames.Length==0 ? null : new Name[asNames.Length];
+    if(asNames!=null)
+      for(int i=0; i<asNames.Length; i++) AsNames[i] = new Name(asNames[i]==null ? names[i] : asNames[i]);
   }
 
   public override void Emit(CodeGenerator cg, ref Type etype)
   { cg.EmitString(Module);
     cg.EmitCall(typeof(Importer), "Load", typeof(string));
-    cg.EmitFieldGet(typeof(TopLevel), "Current");
-    if(Names==null) cg.EmitCall(typeof(MemberContainer), "Import", typeof(TopLevel));
-    else
-    { cg.EmitConstantObject(Names);
-      cg.EmitConstantObject(AsNames);
-      cg.EmitCall(typeof(MemberContainer), "Import", typeof(TopLevel), typeof(string[]), typeof(string[]));
+    
+    if(TopLevel) // outside a function, we set global variables with Import().
+    { cg.EmitFieldGet(typeof(Scripting.TopLevel), "Current");
+      if(Names==null) cg.EmitCall(typeof(MemberContainer), "Import", typeof(TopLevel));
+      else
+      { cg.EmitConstantObject(Names);
+        string[] asNames = new string[AsNames.Length];
+        for(int i=0; i<AsNames.Length; i++) asNames[i] = AsNames[i].String;
+        cg.EmitConstantObject(asNames);
+        cg.EmitCall(typeof(MemberContainer), "Import", typeof(TopLevel), typeof(string[]), typeof(string[]));
+      }
     }
+    else // inside, we set local variables (Names shouldn't be null)
+      for(int i=0; i<Names.Length; i++)
+      { if(i!=Names.Length-1) cg.ILG.Emit(OpCodes.Dup);
+        cg.EmitString(Names[i]);
+        cg.EmitCall(typeof(MemberContainer), "GetSlot", typeof(string));
+        cg.EmitSet(AsNames[i]);
+      }
 
     if(etype!=typeof(void)) { cg.ILG.Emit(OpCodes.Ldnull); etype=typeof(object); }
     TailReturn(cg);
@@ -933,21 +940,44 @@ public sealed class ImportFromNode : Node
 
   public override object Evaluate()
   { MemberContainer mc = Importer.Load(Module);
-    if(Names==null) mc.Import(TopLevel.Current);
-    else mc.Import(TopLevel.Current, Names, AsNames);
+    InterpreterEnvironment ie = InterpreterEnvironment.Current;
+    if(TopLevel || ie==null)
+    { if(Names==null) mc.Import(Scripting.TopLevel.Current);
+      else
+      { string[] asNames = new string[AsNames.Length];
+        for(int i=0; i<AsNames.Length; i++) asNames[i] = AsNames[i].String;
+        mc.Import(Scripting.TopLevel.Current, Names, asNames);
+      }
+    }
+    else for(int i=0; i<Names.Length; i++) ie.Set(AsNames[i].String, mc.GetSlot(Names[i]));
     return null;
+  }
+
+  public override MutatedName[] GetMutatedNames()
+  { if(Names==null) return new MutatedName[0];
+    MutatedName[] mn = new MutatedName[AsNames.Length];
+    for(int i=0; i<AsNames.Length; i++) mn[i] = new MutatedName(AsNames[i]);
+    return mn;
   }
 
   public override Type GetNodeType() { return typeof(void); }
 
+  public override void UpdateNames(MutatedName[] names)
+  { for(int i=0; i<names.Length; i++) AsNames[i] = names[i].Name;
+  }
+
   public readonly string Module;
-  public readonly string[] Names, AsNames;
+  public readonly string[] Names;
+  public readonly Name[] AsNames;
+  public readonly bool TopLevel;
 }
 #endregion
 
 #region IndexNode
 public sealed class IndexNode : Node
 { public IndexNode(Node value, Node index) { Value=value; Index=index; }
+
+  public void Assign(object value) { BoaOps.SetIndex(value, Value.Evaluate(), Index.Evaluate()); }
 
   public override void Emit(CodeGenerator cg, ref Type etype)
   { if(etype==typeof(void))
@@ -957,14 +987,19 @@ public sealed class IndexNode : Node
     { if(IsConstant) cg.EmitConstantObject(Evaluate());
       else
       { cg.EmitNodes(Value, Index);
-        cg.EmitCall(typeof(Ops), "GetIndex");
+        cg.EmitCall(typeof(BoaOps), "GetIndex");
       }
     }
+    TailReturn(cg);
   }
 
   public void EmitSet(CodeGenerator cg, Type onStack)
-  { throw new NotImplementedException();
+  { Value.Emit(cg);
+    Index.Emit(cg);
+    cg.EmitCall(typeof(BoaOps), "SetIndex");
   }
+
+  public override object Evaluate() { return BoaOps.GetIndex(Value.Evaluate(), Index.Evaluate()); }
 
   public override void MarkTail(bool tail)
   { Tail = tail;
@@ -973,6 +1008,19 @@ public sealed class IndexNode : Node
   }
 
   public override void Optimize() { IsConstant = Value.IsConstant && Index.IsConstant; }
+  
+  public override void Postprocess() // TODO: relax this restriction
+  { if(Value.ClearsStack || Index.ClearsStack)
+      throw Ops.SyntaxError(this, "can't use stack clearing nodes (eg generators) in an index statement.");
+  }
+
+  public override void Walk(IWalker w)
+  { if(w.Walk(this))
+    { Value.Walk(w);
+      Index.Walk(w);
+    }
+    w.PostWalk(this);
+  }
 
   public readonly Node Value, Index;
 }
