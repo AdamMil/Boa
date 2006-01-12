@@ -138,9 +138,9 @@ public sealed class AST
           if(i==-1) names.Add(new Name(str, Name.Global));
         }
       }
-      else if(n is SetNode)
+      else if(n is SetNodeBase)
       { if(func!=null)
-          foreach(MutatedName mn in ((SetNode)n).GetMutatedNames())
+          foreach(MutatedName mn in ((SetNodeBase)n).GetMutatedNames())
           { int i;
             for(i=names.Count-1; i>=0; i--) if(((Name)names[i]).String==mn.Name.String) break;
             if(i==-1) names.Add(new Name(mn.Name.String, Name.Local));
@@ -543,14 +543,14 @@ public sealed class AssignNode : SetNode
     else
     { TupleNode tn = lhs as TupleNode;
       if(tn!=null) foreach(Node n in tn.Expressions) GetMutatedNames(names, n);
-      else throw UnhandledNodeType(lhs);
+      else if(!(lhs is IndexNode)) throw UnhandledNodeType(lhs);
     }
   }
 
   protected override void UpdateNames(MutatedName[] names, ref int i, Node lhs)
   { TupleNode tn = lhs as TupleNode;
     if(tn!=null) foreach(Node n in tn.Expressions) UpdateNames(names, ref i, n);
-    else base.UpdateNames(names, ref i, lhs);
+    else if(!(lhs is IndexNode)) base.UpdateNames(names, ref i, lhs);
   }
 
   void EmitTupleAssignment(CodeGenerator cg, TupleNode lhs, object value)
@@ -587,21 +587,13 @@ public sealed class AssignNode : SetNode
 }
 #endregion
 
+// TODO: add support for deleting IndexNodes, etc
 #region BoaDeleteNode
-public sealed class BoaDeleteNode : WrapperNode
-{ public BoaDeleteNode(Node[] nodes)
-  { if(nodes.Length==1) Node = new DeleteNode(nodes[0]);
-    else
-    { Node[] dels = new Node[nodes.Length];
-      for(int i=0; i<nodes.Length; i++) dels[i] = new DeleteNode(nodes[i]);
-      Node = new BodyNode(dels);
-    }
+public sealed class BoaDeleteNode : DeleteNode
+{ public BoaDeleteNode(Node[] nodes) : base(nodes)
+  {
   }
-
-  // TODO: add support for deleting indices, etc
-  sealed class DeleteNode : Scripting.DeleteNode
-  { public DeleteNode(Node node) : base(node) { }
-  }
+  
 }
 #endregion
 

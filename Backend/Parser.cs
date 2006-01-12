@@ -362,7 +362,7 @@ public sealed class Parser
     Eat(Token.LParen);
     Parameter[] parms = ParseParamList(Token.RParen);
     Eat(Token.RParen);
-    Node func = new LambdaNode(name, parms, new BlockNode("*FUNCTION*", ParseSuite(new LiteralNode(null))));
+    Node func = new LambdaNode(name, parms, new BlockNode("*FUNCTION*", ParseSuite(true)));
     funcDepth--;
     return new SetNode(name, func, SetType.Set);
   }
@@ -865,14 +865,12 @@ public sealed class Parser
   }
 
   // stmt_line := <simple_stmt> (';' <simple_stmt>)* (NEWLINE | EOF)
-  Node ParseStmtLine() { return ParseStmtLine(null); }
-  Node ParseStmtLine(Node suffix)
+  Node ParseStmtLine()
   { Node stmt = ParseSimpleStmt();
-    if(token==Token.Semicolon || suffix!=null)
+    if(token==Token.Semicolon)
     { ArrayList stmts = new ArrayList();
       stmts.Add(stmt);
       if(token==Token.Semicolon) while(TryEat(Token.Semicolon)) stmts.Add(ParseSimpleStmt());
-      if(suffix!=null) stmts.Add(suffix);
       stmt = new BodyNode((Node[])stmts.ToArray(typeof(Node)));
     }
     Eat(Token.EOL);
@@ -880,9 +878,8 @@ public sealed class Parser
   }
 
   // suite := ':' stmt_line | ':'? NEWLINE INDENT <statement>+ UNINDENT
-  Node ParseSuite() { return ParseSuite(null); }
-  Node ParseSuite(Node suffix)
-  { if(TryEat(Token.Colon) && token!=Token.EOL) return ParseStmtLine(suffix);
+  Node ParseSuite()
+  { if(TryEat(Token.Colon) && token!=Token.EOL) return ParseStmtLine(true);
     int indent = this.indent;
     Eat(Token.EOL);
     if(this.indent<=indent) SyntaxError("expected indent");
@@ -891,7 +888,6 @@ public sealed class Parser
     { if(TryEat(Token.EOL)) continue;
       stmts.Add(ParseStatement());
     }
-    if(suffix!=null) stmts.Add(suffix);
     return stmts.Count==1 ? (Node)stmts[0] : new BodyNode((Node[])stmts.ToArray(typeof(Node)));
   }
 

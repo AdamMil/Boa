@@ -595,8 +595,8 @@ public sealed class List : IMutableSliceable, IList, IComparable, ICloneable, IR
     { start = stop+1;
       if(colLen<sliceLen) RemoveRange(start, sliceLen-colLen);
       else if(colLen>sliceLen) InsertRange(start, colLen-sliceLen);
-      items.CopyTo(items, start);
-      Array.Reverse(items, start, sliceLen);
+      col.CopyTo(items, start);
+      Array.Reverse(items, start, colLen);
     }
     else if(colLen!=sliceLen)
       throw new ArgumentException(string.Format("Can't assign sequence of size {0} to extended slice of size {1}",
