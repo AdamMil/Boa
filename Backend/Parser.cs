@@ -46,8 +46,7 @@ enum Token
   Lambda, Try, Except, Finally, Raise, Class, Assert, Is, Del, Yield, Lock, Using,
   
   // abstract
-  Identifier, Literal, Assign, Compare, Call, Member, Index, Slice, Hash, List, Tuple, Suite,
-  Module, Assembly, EOL, EOF
+  Identifier, Literal, Assign, Compare, StaticMember, EOL, EOF
 }
 #endregion
 
@@ -264,7 +263,7 @@ public sealed class Parser
     }
   }
   
-  // cim_expr := <primary> ('(' <argument_list> ')' | '[' <index> ']' | '.' <identifier>)*
+  // cim_expr := <primary> ('(' <argument_list> ')' | '[' <index> ']' | '.' <identifier> | '::' <identifier>)*
   Node ParseCIM()
   { Node expr = ParsePrimary();
     while(true)
@@ -282,7 +281,16 @@ public sealed class Parser
         Eat(Token.RBracket);
         expr = new IndexNode(expr, start);
       }
-      else if(TryEat(Token.Period)) expr = new MemberNode(expr, new LiteralNode(ParseIdentifier()));
+      else if(TryEat(Token.StaticMember)) expr = new MemberNode(expr, new LiteralNode(ParseIdentifier()));
+      else if(TryEat(Token.Period))
+      { Argument[] extraArgs = null;
+        string member = ParseIdentifier();
+        if(token==Token.LParen)
+        { extraArgs = ParseArguments();
+          Eat(Token.RParen);
+        }
+        expr = new PropertyNode(expr, new LiteralNode(member), extraArgs);
+      }
       else return expr;
     }
   }
@@ -362,7 +370,7 @@ public sealed class Parser
     Eat(Token.LParen);
     Parameter[] parms = ParseParamList(Token.RParen);
     Eat(Token.RParen);
-    Node func = new LambdaNode(name, parms, new BlockNode("*FUNCTION*", ParseSuite(true)));
+    Node func = new LambdaNode(name, parms, new BlockNode("*FUNCTION*", ParseSuite()));
     funcDepth--;
     return new SetNode(name, func, SetType.Set);
   }
@@ -879,7 +887,7 @@ public sealed class Parser
 
   // suite := ':' stmt_line | ':'? NEWLINE INDENT <statement>+ UNINDENT
   Node ParseSuite()
-  { if(TryEat(Token.Colon) && token!=Token.EOL) return ParseStmtLine(true);
+  { if(TryEat(Token.Colon) && token!=Token.EOL) return ParseStmtLine();
     int indent = this.indent;
     Eat(Token.EOL);
     if(this.indent<=indent) SyntaxError("expected indent");
@@ -1225,7 +1233,11 @@ public sealed class Parser
           if(c=='=') { value=BinaryOperator.Modulus; return Token.Assign; }
           lastChar = c; return Token.Percent;
         case '~': return Token.BitNot;
-        case ':': return Token.Colon;
+        case ':':
+          c = ReadChar();
+          if(c==':') return Token.StaticMember;
+          lastChar = c;
+          return Token.Colon;
         case '`': return Token.BackQuote;
         case ',': return Token.Comma;
         case '(': return Token.LParen;

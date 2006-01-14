@@ -24,6 +24,4 @@ using Scripting;
 namespace Boa.Backend
 {
 
-public sealed class StopIterationException : RuntimeException { }
-
 } // namespace Boa.Backend
