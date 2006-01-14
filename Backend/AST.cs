@@ -179,7 +179,7 @@ public sealed class BoaLanguage : Language
       cg.EmitNew(typeof(List), typeof(int));
       MethodInfo mi = typeof(IList).GetMethod("Add");
       foreach(object o in list)
-      { cg.ILG.Emit(OpCodes.Dup);
+      { cg.Dup();
         cg.EmitConstantObject(o);
         cg.EmitCall(mi);
         cg.ILG.Emit(OpCodes.Pop);
@@ -191,7 +191,7 @@ public sealed class BoaLanguage : Language
       cg.EmitNew(typeof(Dict), typeof(int));
       MethodInfo mi = typeof(IDictionary).GetMethod("Add");
       foreach(DictionaryEntry de in dict)
-      { cg.ILG.Emit(OpCodes.Dup);
+      { cg.Dup();
         cg.EmitConstantObject(de.Key);
         cg.EmitConstantObject(de.Value);
         cg.EmitCall(mi);
@@ -403,7 +403,7 @@ public sealed class AssignNode : SetNode
       { TupleNode tn = LHS[i] as TupleNode;
         if(tn!=null) EmitTupleAssignment(cg, tn, value);
         else
-        { if(++nt!=num || etype!=typeof(void)) cg.ILG.Emit(OpCodes.Dup);
+        { if(++nt!=num || etype!=typeof(void)) cg.Dup();
           EmitSet(cg, LHS[i], type);
         }
       }
@@ -424,10 +424,10 @@ public sealed class AssignNode : SetNode
         for(int i=length-1; i>=0; i--) EmitSet(cg, lhs.Expressions[i], types[i]);
       }
       else
-      { cg.EmitTypedNode(RHS, typeof(Tuple));
+      { RHS.EmitTyped(cg, typeof(Tuple));
         Slot tuple = null;
         if(num!=LHS.Length || etype!=typeof(void))
-        { cg.ILG.Emit(OpCodes.Dup);
+        { cg.Dup();
           if(num!=LHS.Length)
           { tuple = cg.AllocLocalTemp(typeof(object));
             tuple.EmitSet(cg);
@@ -443,9 +443,9 @@ public sealed class AssignNode : SetNode
             EmitSet(cg, LHS[li], typeof(object));
           }
           else
-          { if(++t!=num) cg.ILG.Emit(OpCodes.Dup);
+          { if(++t!=num) cg.Dup();
             for(int i=0; i<tn.Expressions.Length; i++)
-            { if(i!=tn.Expressions.Length-1) cg.ILG.Emit(OpCodes.Dup);
+            { if(i!=tn.Expressions.Length-1) cg.Dup();
               cg.EmitInt(i);
               cg.ILG.Emit(OpCodes.Ldelem_Ref);
               EmitSet(cg, tn.Expressions[i], typeof(object));
@@ -469,7 +469,7 @@ public sealed class AssignNode : SetNode
       Slot tmp;
       if(num==LHS.Length && etype==typeof(void)) tmp = null; // all tuple assignments, and no return value needed
       else
-      { cg.ILG.Emit(OpCodes.Dup);
+      { cg.Dup();
         type = etype==typeof(void) || etype==typeof(object) ? typeof(object) : type;
         tmp  = cg.AllocLocalTemp(type);
         tmp.EmitSet(cg);
@@ -481,9 +481,9 @@ public sealed class AssignNode : SetNode
       for(int i=LHS.Length-1,ta=0; i>=0; i--)
       { TupleNode tn = LHS[i] as TupleNode;
         if(tn!=null)
-        { if(i!=0) cg.ILG.Emit(OpCodes.Dup);
+        { if(i!=0) cg.Dup();
           if(ta++!=0)
-          { cg.ILG.Emit(OpCodes.Dup);
+          { cg.Dup();
             cg.EmitCall(typeof(IEnumerator), "Reset"); // TODO: perhaps to be safe, we should create a new enumerator each time rather than using Reset(), in case Reset() is not supported?
           }
           EmitTupleAssignment(cg, tn);
@@ -569,10 +569,10 @@ public sealed class AssignNode : SetNode
 
   void EmitTupleAssignment(CodeGenerator cg, TupleNode lhs)
   { for(int i=0; i<lhs.Expressions.Length; i++)
-    { cg.ILG.Emit(OpCodes.Dup);
+    { cg.Dup();
       cg.EmitCall(typeof(IEnumerator), "MoveNext");
       cg.ILG.Emit(OpCodes.Pop); // ignore the return value (may cause problems if we encounter bad enumerators)
-      if(i!=lhs.Expressions.Length-1) cg.ILG.Emit(OpCodes.Dup);
+      if(i!=lhs.Expressions.Length-1) cg.Dup();
       cg.EmitPropGet(typeof(IEnumerator), "Current");
 
       TupleNode tn = lhs.Expressions[i] as TupleNode;
@@ -618,7 +618,7 @@ public sealed class CompareNode : Node
         }
         Expressions[i+1].Emit(cg);
         if(i!=Ops.Length-1)
-        { cg.ILG.Emit(OpCodes.Dup);
+        { cg.Dup();
           if(i==0) tmp = cg.AllocLocalTemp(typeof(object));
           tmp.EmitSet(cg);
         }
@@ -692,7 +692,7 @@ public sealed class ForNode : LoopNode
   { public GetCurrentNode(Node enumerator) { Enumerator = enumerator; }
 
     public override void Emit(CodeGenerator cg, ref Type etype)
-    { cg.EmitTypedNode(Enumerator, typeof(IEnumerator));
+    { Enumerator.EmitTyped(cg, typeof(IEnumerator));
       cg.EmitPropGet(typeof(IEnumerator), "Current");
       etype = typeof(object);
       TailReturn(cg);
@@ -736,7 +736,7 @@ public sealed class ForNode : LoopNode
   { public MoveNextNode(Node enumerator) { Enumerator = enumerator; }
 
     public override void Emit(CodeGenerator cg, ref Type etype)
-    { cg.EmitTypedNode(Enumerator, typeof(IEnumerator));
+    { Enumerator.EmitTyped(cg, typeof(IEnumerator));
       cg.EmitCall(typeof(IEnumerator), "MoveNext");
       if(etype!=typeof(bool))
       { cg.ILG.Emit(OpCodes.Box, typeof(bool));
@@ -782,7 +782,7 @@ public sealed class HashNode : Node
       MethodInfo add = typeof(IDictionary).GetMethod("set_Item");
       if(!ClearsStack)
       { foreach(DictionaryEntry de in Entries)
-        { cg.ILG.Emit(OpCodes.Dup);
+        { cg.Dup();
           cg.EmitNodes((Node)de.Key, (Node)de.Value);
           cg.EmitCall(add);
         }
@@ -920,13 +920,13 @@ public sealed class ImportFromNode : SetNodeBase
     }
     else // inside, we set local variables (Names shouldn't be null)
       for(int i=0; i<Names.Length; i++)
-      { if(i!=Names.Length-1) cg.ILG.Emit(OpCodes.Dup);
+      { if(i!=Names.Length-1) cg.Dup();
         cg.EmitString(Names[i]);
         cg.EmitCall(typeof(MemberContainer), "GetSlot", typeof(string));
         cg.EmitSet(AsNames[i]);
       }
 
-    if(etype!=typeof(void)) { cg.ILG.Emit(OpCodes.Ldnull); etype=typeof(object); }
+    if(etype!=typeof(void)) { cg.EmitNull(); etype=typeof(object); }
     TailReturn(cg);
   }
 
@@ -1098,7 +1098,7 @@ public sealed class LockNode : ExceptionNode
     slots = new Slot[locks.Length];
     for(int i=0; i<slots.Length; i++)
     { locks[i].Emit(cg);
-      cg.ILG.Emit(OpCodes.Dup);
+      cg.Dup();
       slots[i] = cg.AllocLocalTemp(typeof(object));
       slots[i].EmitSet(cg);
       if(i==locks.Length-1) cg.ILG.Emit(OpCodes.Brtrue_S, good);
@@ -1178,21 +1178,21 @@ public sealed class PrintNode : Node
 
     if(Expressions!=null)
       foreach(Node n in Expressions)
-      { if(file==null) cg.ILG.Emit(OpCodes.Ldnull);
+      { if(file==null) cg.EmitNull();
         else file.EmitGet(cg);
         n.Emit(cg);
         cg.EmitCall(typeof(BoaOps), "Print");
       }
 
     if(TrailingNewline)
-    { if(file==null) cg.ILG.Emit(OpCodes.Ldnull);
+    { if(file==null) cg.EmitNull();
       else file.EmitGet(cg);
       cg.EmitCall(typeof(BoaOps), "PrintNewline");
     }
     
     if(file!=null) cg.FreeLocalTemp(file);
     
-    if(etype!=typeof(void)) { cg.ILG.Emit(OpCodes.Ldnull); etype=typeof(object); }
+    if(etype!=typeof(void)) { cg.EmitNull(); etype=typeof(object); }
     TailReturn(cg);
   }
 
@@ -1365,7 +1365,7 @@ public sealed class UsingNode : ExceptionNode
 
     slots = new Slot[temps.Length];
     for(int i=0; i<slots.Length; i++)
-    { cg.EmitTypedNode(temps[i], typeof(IDisposable));
+    { temps[i].EmitTyped(cg, typeof(IDisposable));
       slots[i] = cg.AllocLocalTemp(typeof(IDisposable));
       slots[i].EmitSet(cg);
     }
