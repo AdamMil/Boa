@@ -75,14 +75,15 @@ public sealed class Parser
   }
 
   public Node Parse()
-  { ArrayList stmts = new ArrayList();
-    while(true)
-    { if(TryEat(Token.EOL)) continue;
-      if(TryEat(Token.EOF)) break;
-      int line = this.line, column = this.column;
-      stmts.Add(ParseStatement());
+  { using(CachedArray stmts = CachedArray.Alloc())
+    { while(true)
+      { if(TryEat(Token.EOL)) continue;
+        if(TryEat(Token.EOF)) break;
+        int line = this.line, column = this.column;
+        stmts.Add(ParseStatement());
+      }
+      return stmts.Count==0 ? new PassNode() : (Node)new BodyNode((Node[])stmts.ToArray(typeof(Node)));
     }
-    return stmts.Count==0 ? new PassNode() : (Node)new BodyNode((Node[])stmts.ToArray(typeof(Node)));
   }
 
   // expression := <ternary> | <lambda> (',' <expression>)?
@@ -90,13 +91,13 @@ public sealed class Parser
   { if(token==Token.Lambda) return ParseLambda();
     Node expr = ParseTernary();
     if(bareTuples && token==Token.Comma)
-    { ArrayList exprs = new ArrayList();
-      exprs.Add(expr);
-      bareTuples = false;
-      while(TryEat(Token.Comma) && token!=Token.EOL && token!=Token.Assign) exprs.Add(ParseExpression());
-      bareTuples = true;
-      expr = new TupleNode((Node[])exprs.ToArray(typeof(Node)));
-    }
+      using(CachedArray exprs = CachedArray.Alloc())
+      { exprs.Add(expr);
+        bareTuples = false;
+        while(TryEat(Token.Comma) && token!=Token.EOL && token!=Token.Assign) exprs.Add(ParseExpression());
+        bareTuples = true;
+        expr = new TupleNode((Node[])exprs.ToArray(typeof(Node)));
+      }
     return expr;
   }
 
@@ -214,12 +215,13 @@ public sealed class Parser
   // argument := ('*' | '**')? <expression> | <identifier> '=' <expression>
   Argument[] ParseArguments()
   { bool obt=bareTuples, owe=wantEOL;
-    bareTuples=wantEOL=false;
+    bareTuples = wantEOL = false;
 
+    CachedArray args = null;
     try
     { Eat(Token.LParen);
       if(token==Token.RParen) return new Argument[0];
-      ArrayList args = new ArrayList();
+      args = CachedArray.Alloc();
       do
       { if(TryEat(Token.Asterisk)) args.Add(new Argument(ParseExpression(), ArgType.List));
         else if(TryEat(Token.Power)) args.Add(new Argument(ParseExpression(), ArgType.Dict));
@@ -243,7 +245,7 @@ public sealed class Parser
 
       return (Argument[])args.ToArray(typeof(Argument));
     }
-    finally { bareTuples=obt; wantEOL=owe; }
+    finally { bareTuples=obt; wantEOL=owe; if(args!=null) args.Dispose(); }
   }
 
   // bitwise    := <shift> (<bitwise_op> <shift>)*
@@ -304,7 +306,7 @@ public sealed class Parser
     if(TryEat(Token.LParen))
     { if(TryEat(Token.RParen)) bases = new Expression[0];
       else
-      { ArrayList inherit = new ArrayList();
+      { CachedArray inherit = new ArrayList();
         bool obt = bareTuples;
         bareTuples = false;
 
@@ -324,11 +326,11 @@ public sealed class Parser
   // compare_op := '==' | '!=' | '<' | '>' | '<=' | '>=' | '<>' | 'is' | 'is not'
   Node ParseCompare()
   { Node expr = ParseIsIn();
-    ArrayList comps = null;
+    CachedArray comps = null;
     while(true)
     { if(token==Token.Compare || token==Token.Is)
       { if(comps==null)
-        { comps = new ArrayList();
+        { comps = CachedArray.Alloc();
           comps.Add(expr);
         }
 
@@ -337,7 +339,7 @@ public sealed class Parser
           NextToken();
         }
         else // token==Token.Is
-        { if(comps==null) comps = new ArrayList();
+        { if(comps==null) comps = CachedArray.Alloc();
           bool not = NextToken()==Token.Not;
           comps.Add(not ? Operator.NotIdentical : Operator.Identical);
           if(not) NextToken();
@@ -358,20 +360,23 @@ public sealed class Parser
         }
         expr = new CompareNode(exprs, ops);
       }
+      comps.Dispose();
     }
     return expr;
   }
 
   // def_stmt := 'def' <identifier> '(' <param_list> ')' ':' <suite>
   Node ParseDef()
-  { funcDepth++;
+  { bool oldYields = hasYield;
+    hasYield=false; funcDepth++;
     Eat(Token.Def);
     string name = ParseIdentifier();
     Eat(Token.LParen);
     Parameter[] parms = ParseParamList(Token.RParen);
     Eat(Token.RParen);
-    Node func = new LambdaNode(name, parms, new BlockNode("*FUNCTION*", ParseSuite()));
-    funcDepth--;
+    Node body = new BlockNode("*FUNCTION*", ParseSuite());
+    Node func = new LambdaNode(name, parms, hasYield ? new GeneratorNode(body) : body);
+    hasYield=oldYields; funcDepth--;
     return new SetNode(name, func, SetType.Set);
   }
 
@@ -387,9 +392,10 @@ public sealed class Parser
   // lvalue     := <assignable> | <tuple of <assignable>>
   Node ParseExprStmt()
   { Node lhs = ParseExpression();
-    if(token==Token.Assign)
-    { ArrayList list = new ArrayList();
-      BinaryOperator op = (BinaryOperator)value;
+    if(token!=Token.Assign) return lhs;
+
+    using(CachedArray list = CachedArray.Alloc())
+    { BinaryOperator op = (BinaryOperator)value;
 
       while(TryEat(Token.Assign))
       { if(op!=null)
@@ -405,7 +411,6 @@ public sealed class Parser
       return op==null ? new AssignNode((Node[])list.ToArray(typeof(Node)), lhs)
                       : new AssignNode((Node)list[0], new OpNode(op, (Node)list[0], lhs));
     }
-    else return lhs;
   }
 
   // factor    := <power> (<factor_op> <power>)*
@@ -442,10 +447,11 @@ public sealed class Parser
   // global_stmt := 'global' <namelist> EOL
   Node ParseGlobal()
   { Eat(Token.Global);
-    ArrayList names = new ArrayList();
-    do names.Add(ParseIdentifier()); while(TryEat(Token.Comma));
-    Eat(Token.EOL);
-    return new GlobalNode((string[])names.ToArray(typeof(string)));
+    using(CachedArray names = CachedArray.Alloc())
+    { do names.Add(ParseIdentifier()); while(TryEat(Token.Comma));
+      Eat(Token.EOL);
+      return new GlobalNode((string[])names.ToArray(typeof(string)));
+    }
   }
 
   string ParseIdentifier()
@@ -485,31 +491,33 @@ public sealed class Parser
       }
       else
       { Expect(Token.Identifier);
-        ArrayList names=new ArrayList(), asNames=new ArrayList();
-        do
-        { names.Add(ParseIdentifier());
+        using(CachedArray names=CachedArray.Alloc(), asNames=CachedArray.Alloc())
+        { do
+          { names.Add(ParseIdentifier());
+            if(token==Token.Identifier && (string)value=="as")
+            { NextToken();
+              asNames.Add(ParseIdentifier());
+            }
+            else asNames.Add(null);
+          } while(token!=Token.EOL && TryEat(Token.Comma));
+          stmt = new ImportFromNode(module, (string[])names.ToArray(typeof(string)),
+                                    (string[])asNames.ToArray(typeof(string)), !InFunction);
+        }
+      }
+    }
+    else
+    { Eat(Token.Import);
+      using(CachedArray names=CachedArray.Alloc(), asNames=CachedArray.Alloc())
+      { do
+        { names.Add(ParseDotted());
           if(token==Token.Identifier && (string)value=="as")
           { NextToken();
             asNames.Add(ParseIdentifier());
           }
           else asNames.Add(null);
         } while(token!=Token.EOL && TryEat(Token.Comma));
-        stmt = new ImportFromNode(module, (string[])names.ToArray(typeof(string)),
-                                  (string[])asNames.ToArray(typeof(string)), !InFunction);
+        stmt = new ImportNode((string[])names.ToArray(typeof(string)), (string[])asNames.ToArray(typeof(string)));
       }
-    }
-    else
-    { Eat(Token.Import);
-      ArrayList names=new ArrayList(), asNames=new ArrayList();
-      do
-      { names.Add(ParseDotted());
-        if(token==Token.Identifier && (string)value=="as")
-        { NextToken();
-          asNames.Add(ParseIdentifier());
-        }
-        else asNames.Add(null);
-      } while(token!=Token.EOL && TryEat(Token.Comma));
-      stmt = new ImportNode((string[])names.ToArray(typeof(string)), (string[])asNames.ToArray(typeof(string)));
     }
     Eat(Token.EOL);
     return stmt;
@@ -538,52 +546,53 @@ public sealed class Parser
     Parameter[] parms = ParseParamList(Token.Colon);
     Eat(Token.Colon);
 
-    ArrayList list = new ArrayList();
-    do
-    { switch(token)
-      { case Token.EOL: case Token.Comma: case Token.RParen: case Token.RBrace: case Token.RBracket: case Token.For:
-          goto done;
-        case Token.Return:
-          switch(NextToken())
-          { case Token.EOL: case Token.Comma: case Token.RParen: case Token.RBrace: case Token.RBracket:
-            case Token.For:
-              list.Add(new BreakNode("*FUNCTION*")); break;
-            default: list.Add(new BreakNode("*FUNCTION*")); break;
-          }
-          break;
-        default: list.Add(ParseSimpleStmt()); break;
-      }
-    } while(TryEat(Token.Semicolon));
+    using(CachedArray list = CachedArray.Alloc())
+    { do
+      { switch(token)
+        { case Token.EOL: case Token.Comma: case Token.RParen: case Token.RBrace: case Token.RBracket: case Token.For:
+            goto done;
+          case Token.Return:
+            switch(NextToken())
+            { case Token.EOL: case Token.Comma: case Token.RParen: case Token.RBrace: case Token.RBracket:
+              case Token.For:
+                list.Add(new LiteralNode(null));
+                goto done;
+              default: list.Add(ParseSimpleStmt()); goto done;
+            }
+          default: list.Add(ParseSimpleStmt()); break;
+        }
+      } while(TryEat(Token.Semicolon));
 
-    done:
-    if(list.Count==0) Unexpected(token);
-    Node body = list.Count==1 ? (Node)list[0] : new BodyNode((Node[])list.ToArray(typeof(Node)));
-    funcDepth--;
-    return new LambdaNode(parms, new BlockNode("*FUNCTION*", body));
+      done:
+      if(list.Count==0) Unexpected(token);
+      funcDepth--;
+      return new LambdaNode(parms, new BlockNode("*FUNCTION*", list.Count==1 ? (Node)list[0]
+                                                                 : new BodyNode((Node[])list.ToArray(typeof(Node)))));
+    }
   }
 
   // list_comprehension := <expression> ('for' <namelist> 'in' <expression> ('if' <expression>)?)+
-  Node ParseListComprehension(Node expr)
-  { throw new NotImplementedException();
-    /*ArrayList list = new ArrayList();
-    do
-    { Eat(Token.For);
-      Name[] names = ParseNameList();
-      Eat(Token.In);
-      list.Add(new ListCompFor(names, ParseExpression(), TryEat(Token.If) ? ParseExpression() : null));
-    } while(token==Token.For);
-    return new ListCompExpression(expr, (ListCompFor[])list.ToArray(typeof(ListCompFor)));*/
+  Node ParseListComprehension(Node expr, bool yieldResult)
+  { using(CachedArray list = CachedArray.Alloc())
+    { do
+      { Eat(Token.For);
+        Name[] names = ParseNameList();
+        Eat(Token.In);
+        list.Add(new ListCompNode.For(names, ParseExpression(), TryEat(Token.If) ? ParseExpression() : null));
+      } while(token==Token.For);
+      return new ListCompNode(expr, (ListCompNode.For[])list.ToArray(typeof(ListCompNode.For)), yieldResult);
+    }
   }
 
   // logand := <lognot> ('&&' <lognot>)*
   Node ParseLogAnd()
   { Node expr = ParseLogNot();
     if(token==Token.LogAnd)
-    { ArrayList list = new ArrayList();
-      list.Add(expr);
-      while(TryEat(Token.LogAnd)) list.Add(ParseLogNot());
-      expr = new OpNode(Operator.LogicalAnd, (Node[])list.ToArray(typeof(Node)));
-    }
+      using(CachedArray list = CachedArray.Alloc())
+      { list.Add(expr);
+        while(TryEat(Token.LogAnd)) list.Add(ParseLogNot());
+        expr = new OpNode(Operator.LogicalAnd, (Node[])list.ToArray(typeof(Node)));
+      }
     return expr;
   }
 
@@ -596,11 +605,11 @@ public sealed class Parser
   Node ParseLogOr()
   { Node expr = ParseLogAnd();
     if(token==Token.LogOr)
-    { ArrayList list = new ArrayList();
-      list.Add(expr);
-      while(TryEat(Token.LogOr)) list.Add(ParseLogAnd());
-      expr = new OpNode(Operator.LogicalOr, (Node[])list.ToArray(typeof(Node)));
-    }
+      using(CachedArray list = CachedArray.Alloc())
+      { list.Add(expr);
+        while(TryEat(Token.LogOr)) list.Add(ParseLogAnd());
+        expr = new OpNode(Operator.LogicalOr, (Node[])list.ToArray(typeof(Node)));
+      }
     return expr;
   }
 
@@ -629,22 +638,17 @@ public sealed class Parser
         else
         { expr = ParseExpression();
           if(token==Token.Comma)
-          { NextToken();
-            ArrayList list = new ArrayList();
-            list.Add(expr);
-            while(token!=Token.RParen)
-            { bareTuples = false;
-              list.Add(ParseExpression());
-              if(!TryEat(Token.Comma)) break;
+            using(CachedArray list = CachedArray.Alloc())
+            { NextToken();
+              list.Add(expr);
+              while(token!=Token.RParen)
+              { bareTuples = false;
+                list.Add(ParseExpression());
+                if(!TryEat(Token.Comma)) break;
+              }
+              expr = new TupleNode((Node[])list.ToArray(typeof(Node)));
             }
-            expr = new TupleNode((Node[])list.ToArray(typeof(Node)));
-          }
-          else if(token==Token.For) // hijack ParseListComprehension()
-          { /*ListCompExpression lc = (ListCompExpression)ParseListComprehension(expr);
-            expr = new GeneratorExpression(lc.Item, lc.Fors);
-            expr.SetLocation(lc);*/
-            throw new NotImplementedException();
-          }
+          else if(token==Token.For) expr = new GeneratorNode(ParseListComprehension(expr, true));
         }
         Expect(Token.RParen);
         break;
@@ -654,18 +658,18 @@ public sealed class Parser
         if(token==Token.RBracket) expr = new ListNode();
         else
         { Node fe = ParseExpression();
-          if(token==Token.For) expr = ParseListComprehension(fe);
+          if(token==Token.For) expr = ParseListComprehension(fe, false);
           else
-          { ArrayList list = new ArrayList();
-            list.Add(fe);
-            TryEat(Token.Comma);
-            while(token!=Token.RBracket)
-            { bareTuples = false;
-              list.Add(ParseExpression());
-              if(!TryEat(Token.Comma)) break;
+            using(CachedArray list = CachedArray.Alloc())
+            { list.Add(fe);
+              TryEat(Token.Comma);
+              while(token!=Token.RBracket)
+              { bareTuples = false;
+                list.Add(ParseExpression());
+                if(!TryEat(Token.Comma)) break;
+              }
+              expr = new ListNode((Node[])list.ToArray(typeof(Node)));
             }
-            expr = new ListNode((Node[])list.ToArray(typeof(Node)));
-          }
         }
         Expect(Token.RBracket);
         break;
@@ -716,21 +720,23 @@ public sealed class Parser
       Eat(Token.Comma);
     }
 
-    ArrayList stmts = new ArrayList();
-    do
-    { trailing = true;
-      stmts.Add(ParseExpression());
-      if(TryEat(Token.Comma)) trailing = false;
-    } while(token!=Token.EOL && token!=Token.Semicolon);
-    bareTuples = old;
-    return new PrintNode(file, (Node[])stmts.ToArray(typeof(Node)), trailing || stmts.Count==0);
+    using(CachedArray stmts = CachedArray.Alloc())
+    { do
+      { trailing = true;
+        stmts.Add(ParseExpression());
+        if(TryEat(Token.Comma)) trailing = false;
+      } while(token!=Token.EOL && token!=Token.Semicolon);
+      bareTuples = old;
+      return new PrintNode(file, (Node[])stmts.ToArray(typeof(Node)), trailing || stmts.Count==0);
+    }
   }
 
   // namelist := <identifier> (',' <identifier>)*
   Name[] ParseNameList()
-  { ArrayList list = new ArrayList();
-    do list.Add(new Name(ParseIdentifier())); while(TryEat(Token.Comma));
-    return (Name[])list.ToArray(typeof(Name));
+  { using(CachedArray list = CachedArray.Alloc())
+    { do list.Add(new Name(ParseIdentifier())); while(TryEat(Token.Comma));
+      return (Name[])list.ToArray(typeof(Name));
+    }
   }
 
   // param_list := <required_params>? <pcomma> <optional_params>? <pcomma> ('*' <identifier>)? <pcomma>
@@ -741,43 +747,44 @@ public sealed class Parser
   // pcomma := ','?    (comma required to separate argument/parameter groups)
   Parameter[] ParseParamList(Token end)
   { if(token==end) return new Parameter[0];
-    ArrayList parms = new ArrayList();
-    string ident;
-    bool obt=bareTuples, owe=wantEOL;
-    bareTuples=wantEOL=false;
+    using(CachedArray parms = CachedArray.Alloc())
+    { string ident;
+      bool obt=bareTuples, owe=wantEOL;
+      bareTuples = wantEOL = false;
 
-    while(true) // required identifiers
-    { if(TryEat(Token.Asterisk)) goto list;
-      if(token==Token.Power) goto dict;
-      ident = ParseIdentifier();
-      if(TryEat(Token.Assign)) break;
-      parms.Add(new Parameter(ident));
+      while(true) // required identifiers
+      { if(TryEat(Token.Asterisk)) goto list;
+        if(token==Token.Power) goto dict;
+        ident = ParseIdentifier();
+        if(TryEat(Token.Assign)) break;
+        parms.Add(new Parameter(ident));
+        if(token==end) goto done;
+        Eat(Token.Comma);
+      }
+      while(true) // positional parameters
+      { parms.Add(new Parameter(ident, ParseExpression()));
+        if(token==end) goto done;
+        Eat(Token.Comma);
+        if(TryEat(Token.Asterisk)) break;
+        if(token==Token.Power) goto dict;
+        ident = ParseIdentifier();
+        Eat(Token.Assign);
+      }
+      list: if(token==Token.Identifier) parms.Add(new Parameter(ParseIdentifier(), ParamType.List));
       if(token==end) goto done;
       Eat(Token.Comma);
-    }
-    while(true) // positional parameters
-    { parms.Add(new Parameter(ident, ParseExpression()));
-      if(token==end) goto done;
-      Eat(Token.Comma);
-      if(TryEat(Token.Asterisk)) break;
-      if(token==Token.Power) goto dict;
-      ident = ParseIdentifier();
-      Eat(Token.Assign);
-    }
-    list: if(token==Token.Identifier) parms.Add(new Parameter(ParseIdentifier(), ParamType.List));
-    if(token==end) goto done;
-    Eat(Token.Comma);
-    dict: Eat(Token.Power);
-    parms.Add(new Parameter(ParseIdentifier(), ParamType.Dict));
+      dict: Eat(Token.Power);
+      parms.Add(new Parameter(ParseIdentifier(), ParamType.Dict));
 
-    done:
-    ListDictionary ld = new ListDictionary();
-    foreach(Parameter p in parms)
-      if(ld.Contains(p.Name.String)) SyntaxError("duplicate parameter name '{0}'", p.Name.String);
-      else ld[p.Name.String] = null;
+      done:
+      ListDictionary ld = new ListDictionary();
+      foreach(Parameter p in parms)
+        if(ld.Contains(p.Name.String)) SyntaxError("duplicate parameter name '{0}'", p.Name.String);
+        else ld[p.Name.String] = null;
 
-    bareTuples=obt; wantEOL=owe;
-    return (Parameter[])parms.ToArray(typeof(Parameter));
+      bareTuples=obt; wantEOL=owe;
+      return (Parameter[])parms.ToArray(typeof(Parameter));
+    }
   }
 
   // power := <unary> ('**' <unary>)*
@@ -839,35 +846,34 @@ public sealed class Parser
       case Token.Pass: NextToken(); return new PassNode();
       case Token.Return:
         NextToken();
-        return token==Token.EOL || token==Token.Semicolon ? new BreakNode("*FUNCTION*")
-                                                          : new BreakNode("*FUNCTION*", ParseExpression());
+        return token==Token.EOL || token==Token.Semicolon ? new ReturnNode() : new ReturnNode(ParseExpression());
       case Token.Raise:
       { NextToken();
         if(token==Token.EOL || token==Token.Semicolon) return new ThrowNode();
         Node expr = ParseExpression();
         if(TryEat(Token.Comma))
-        { ArrayList objs = new ArrayList();
-          do objs.Add(ParseExpression()); while(TryEat(Token.Comma));
-          return new ThrowNode(expr, (Node[])objs.ToArray(typeof(Node)));
-        }
+          using(CachedArray objs = CachedArray.Alloc())
+          { do objs.Add(ParseExpression()); while(TryEat(Token.Comma));
+            return new ThrowNode(expr, (Node[])objs.ToArray(typeof(Node)));
+          }
         else return new ThrowNode(expr);
       }
       case Token.Assert: NextToken(); return new AssertNode(ParseExpression());
-      case Token.Yield: NextToken(); throw new NotImplementedException(); //return new YieldStatement(ParseExpression());
+      case Token.Yield: NextToken(); hasYield=true; return new YieldNode(ParseExpression());
       case Token.Del:
-      { NextToken();
-        ArrayList list = new ArrayList();
-        bool obt = bareTuples;
-        bareTuples = false;
-        do
-        { Node e = ParseExpression();
-          if(!(e is VariableNode || e is MemberNode || e is TupleNode || e is IndexNode))
-            SyntaxError("can't delete {0}", e.GetType());
-          list.Add(e);
-        } while(TryEat(Token.Comma));
-        bareTuples = obt;
-        return new BoaDeleteNode((Node[])list.ToArray(typeof(Node)));
-      }
+        using(CachedArray list = CachedArray.Alloc())
+        { NextToken();
+          bool obt = bareTuples;
+          bareTuples = false;
+          do
+          { Node e = ParseExpression();
+            if(!(e is VariableNode || e is MemberNode || e is TupleNode || e is IndexNode))
+              SyntaxError("can't delete {0}", e.GetType());
+            list.Add(e);
+          } while(TryEat(Token.Comma));
+          bareTuples = obt;
+          return new BoaDeleteNode((Node[])list.ToArray(typeof(Node)));
+        }
       default: return ParseExprStmt();
     }
   }
@@ -876,11 +882,11 @@ public sealed class Parser
   Node ParseStmtLine()
   { Node stmt = ParseSimpleStmt();
     if(token==Token.Semicolon)
-    { ArrayList stmts = new ArrayList();
-      stmts.Add(stmt);
-      if(token==Token.Semicolon) while(TryEat(Token.Semicolon)) stmts.Add(ParseSimpleStmt());
-      stmt = new BodyNode((Node[])stmts.ToArray(typeof(Node)));
-    }
+      using(CachedArray stmts = CachedArray.Alloc())
+      { stmts.Add(stmt);
+        if(token==Token.Semicolon) while(TryEat(Token.Semicolon)) stmts.Add(ParseSimpleStmt());
+        stmt = new BodyNode((Node[])stmts.ToArray(typeof(Node)));
+      }
     Eat(Token.EOL);
     return stmt;
   }
@@ -891,12 +897,13 @@ public sealed class Parser
     int indent = this.indent;
     Eat(Token.EOL);
     if(this.indent<=indent) SyntaxError("expected indent");
-    ArrayList stmts = new ArrayList();
-    while(this.indent>indent)
-    { if(TryEat(Token.EOL)) continue;
-      stmts.Add(ParseStatement());
+    using(CachedArray stmts = CachedArray.Alloc())
+    { while(this.indent>indent)
+      { if(TryEat(Token.EOL)) continue;
+        stmts.Add(ParseStatement());
+      }
+      return stmts.Count==1 ? (Node)stmts[0] : new BodyNode((Node[])stmts.ToArray(typeof(Node)));
     }
-    return stmts.Count==1 ? (Node)stmts[0] : new BodyNode((Node[])stmts.ToArray(typeof(Node)));
   }
 
   // term := <factor> (('+' | '-') <factor>)*
@@ -932,20 +939,21 @@ public sealed class Parser
   { int indent = this.indent;
     Eat(Token.Try);
     Node body=ParseSuite(), elze=null, final=null;
-    ArrayList list = new ArrayList();
-    while(indent==this.indent && TryEat(Token.Except))
-    { bool obt = bareTuples;
-      bareTuples = false;
-      Node type = token==Token.Comma || token==Token.Colon || token==Token.EOL ? null : ParseExpression();
-      bareTuples = true;
-      string name = TryEat(Token.Comma) ? ParseIdentifier() : null;
-      list.Add(new Except(name, type, ParseSuite()));
-      if(type==null) break;
+    using(CachedArray list = CachedArray.Alloc())
+    { while(indent==this.indent && TryEat(Token.Except))
+      { bool obt = bareTuples;
+        bareTuples = false;
+        Node type = token==Token.Comma || token==Token.Colon || token==Token.EOL ? null : ParseExpression();
+        bareTuples = true;
+        string name = TryEat(Token.Comma) ? ParseIdentifier() : null;
+        list.Add(new Except(name, type, ParseSuite()));
+        if(type==null) break;
+      }
+      if(indent==this.indent && TryEat(Token.Else)) elze = ParseSuite();
+      if(indent==this.indent && TryEat(Token.Finally)) final = ParseSuite();
+      if(list.Count==0 && elze==null && final==null) SyntaxError("expecting 'except', 'else', or 'finally'");
+      return new TryNode(body, final, elze, (Except[])list.ToArray(typeof(Except)));
     }
-    if(indent==this.indent && TryEat(Token.Else)) elze = ParseSuite();
-    if(indent==this.indent && TryEat(Token.Finally)) final = ParseSuite();
-    if(list.Count==0 && elze==null && final==null) SyntaxError("expecting 'except', 'else', or 'finally'");
-    return new TryNode(body, final, elze, (Except[])list.ToArray(typeof(Except)));
   }
 
   // unary     := <unary_op> <unary>
@@ -1280,7 +1288,7 @@ public sealed class Parser
   object     value, nextValue;
   int        line=1, column=1, pos, indent, funcDepth, loopDepth;
   char       lastChar;
-  bool       bareTuples=true, wantEOL=true;
+  bool       bareTuples=true, wantEOL=true, hasYield;
   
   static SortedList stringTokens;
 }

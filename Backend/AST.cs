@@ -34,8 +34,10 @@ public sealed class AST
 { AST() { }
 
   public static Node Create(Node node)
-  { node.Walk(new BoaWalker());
-    return node;
+  { using(BoaWalker bw = new BoaWalker())
+    { node.Walk(bw);
+      return node;
+    }
   }
   
   // simple nodes are ones that we can skip evaluating or evaluate multiple times without breaking anything.
@@ -82,24 +84,32 @@ public sealed class AST
            x = 5
            global x # warning, 'x' assigned to before global declaration.
   */
-  public sealed class BoaWalker : IWalker
-  { public void PostWalk(Node n) { }
+  public sealed class BoaWalker : IWalker, IDisposable
+  { public void Dispose() { if(names!=null) names.Dispose(); }
+    public void PostWalk(Node n) { }
 
-    public bool Walk(Node n)
-    { if(n is LambdaNode)
-      { foreach(Parameter p in ((LambdaNode)n).Parameters) if(p.Default!=null) p.Default.Walk(this);
+    public bool Walk(Node node)
+    { if(node is LambdaNode || node is GeneratorNode)
+      { if(node is LambdaNode)
+          foreach(Parameter p in ((LambdaNode)node).Parameters) if(p.Default!=null) p.Default.Walk(this);
 
-        if(names==null) names = new ArrayList();
+        LambdaNode oldFunc = func;
+        GeneratorNode oldGen = gen;
+        func = node as LambdaNode;
+        gen  = node as GeneratorNode;
 
-        LambdaNode oldFunc=func;
-        func = (LambdaNode)n;
+        if(names==null) names = CachedArray.Alloc();
+
         int oldCount = baseCount;
         baseCount = names.Count;
 
-        foreach(Parameter p in func.Parameters) names.Add(p.Name);
-        func.Body.Walk(this);
+        if(func==null) gen.Body.Walk(this);
+        else
+        { foreach(Parameter p in func.Parameters) names.Add(p.Name);
+          func.Body.Walk(this);
+        }
 
-        int pbase = baseCount+func.Parameters.Length; // discount the parameters
+        int pbase = baseCount+(func==null ? 0 : func.Parameters.Length); // discount the parameters
         if(pbase!=names.Count)
         { int numLocal = 0;
           for(int i=pbase; i<names.Count; i++) if(((Name)names[i]).Depth!=Name.Global) numLocal++;
@@ -109,17 +119,18 @@ public sealed class AST
             { Name name = (Name)names[i];
               if(name.Depth!=Name.Global) localNames[j++] = name.String;
             }
-            func.Body = new LocalBindNode(localNames, new Node[localNames.Length], func.Body);
+            if(func!=null) func.Body = new LocalBindNode(localNames, new Node[localNames.Length], func.Body);
+            else gen.Body = new LocalBindNode(localNames, new Node[localNames.Length], gen.Body);
           }
         }
         names.RemoveRange(baseCount, names.Count-baseCount);
 
-        func=oldFunc; baseCount=oldCount;
+        func=oldFunc; gen=oldGen; baseCount=oldCount;
         return false;
       }
-      else if(n is GlobalNode)
-      { if(func==null) throw Ops.SyntaxError(n, "'global' encounted outside function"); // TODO: make this a warning
-        GlobalNode gn = (GlobalNode)n;
+      else if(node is GlobalNode)
+      { if(func==null && gen==null) throw Ops.SyntaxError(node, "'global' encounted outside function"); // TODO: make this a warning
+        GlobalNode gn = (GlobalNode)node;
 
         foreach(string str in gn.Names)
         { int i;
@@ -127,9 +138,9 @@ public sealed class AST
           { Name name = (Name)names[i];
             if(name.String==str)
             { if(name.Depth==0 || name.Depth==Name.Local && i<baseCount)
-                throw Ops.SyntaxError(n, "'{0}' defined as both global and local", str); // parameter
+                throw Ops.SyntaxError(node, "'{0}' defined as both global and local", str); // parameter
               else if(name.Depth==Name.Local)
-              { throw Ops.SyntaxError(n, "'{0}' was assigned to before 'global' statement", str); // TODO: make this a warning
+              { throw Ops.SyntaxError(node, "'{0}' was assigned to before 'global' statement", str); // TODO: make this a warning
                 name.Depth = Name.Global;
                 break;
               }
@@ -138,9 +149,9 @@ public sealed class AST
           if(i==-1) names.Add(new Name(str, Name.Global));
         }
       }
-      else if(n is SetNodeBase)
+      else if(node is SetNodeBase)
       { if(func!=null)
-          foreach(MutatedName mn in ((SetNodeBase)n).GetMutatedNames())
+          foreach(MutatedName mn in ((SetNodeBase)node).GetMutatedNames())
           { int i;
             for(i=names.Count-1; i>=0; i--) if(((Name)names[i]).String==mn.Name.String) break;
             if(i==-1) names.Add(new Name(mn.Name.String, Name.Local));
@@ -150,8 +161,9 @@ public sealed class AST
       return true;
     }
 
-    ArrayList names;
+    CachedArray names;
     LambdaNode func;
+    GeneratorNode gen;
     int baseCount;
   }
   #endregion
@@ -506,13 +518,14 @@ public sealed class AssignNode : SetNode
   }
 
   public override MutatedName[] GetMutatedNames()
-  { ArrayList names = new ArrayList();
-    foreach(Node n in LHS)
-    { VariableNode vn = n as VariableNode; // treat top-level VariableNodes differently than nested ones because we can
-      if(vn!=null) names.Add(new MutatedName(vn.Name, RHS)); // easily determine the value of a top-level one (RHS),
-      else GetMutatedNames(names, n);                        // but a nested VariableNode is more complicated
+  { using(CachedArray names = CachedArray.Alloc())
+    { foreach(Node n in LHS)
+      { VariableNode vn = n as VariableNode; // treat top-level VariableNodes differently than nested ones because we
+        if(vn!=null) names.Add(new MutatedName(vn.Name, RHS)); // can easily determine the value of a top-level one
+        else GetMutatedNames(names, n);                        // (RHS), but a nested VariableNode is more complicated
+      }
+      return (MutatedName[])names.ToArray(typeof(MutatedName));
     }
-    return (MutatedName[])names.ToArray(typeof(MutatedName));
   }
 
   protected override void Assign(Node lhs, object value)
@@ -688,7 +701,7 @@ public sealed class ForNode : LoopNode
   }
 
   #region GetCurrentNode
-  sealed class GetCurrentNode : Node
+  public sealed class GetCurrentNode : Node
   { public GetCurrentNode(Node enumerator) { Enumerator = enumerator; }
 
     public override void Emit(CodeGenerator cg, ref Type etype)
@@ -710,7 +723,7 @@ public sealed class ForNode : LoopNode
   #endregion
 
   #region GetEnumeratorNode
-  sealed class GetEnumeratorNode : Node
+  public sealed class GetEnumeratorNode : Node
   { public GetEnumeratorNode(Node expression) { Expression=expression; }
     
     public override void Emit(CodeGenerator cg, ref Type etype)
@@ -1027,7 +1040,8 @@ public sealed class ListNode : Node
     { if(!IsConstant) cg.EmitVoids(Expressions);
     }
     else
-    { if(IsConstant)
+    { if(Expressions.Length==0) cg.EmitNew(typeof(List));
+      else if(IsConstant)
       { cg.EmitConstantObject(Evaluate());
         cg.EmitNew(typeof(List), typeof(ICollection));
       }
@@ -1049,12 +1063,119 @@ public sealed class ListNode : Node
   
   public override void Optimize() { IsConstant = AreConstant(Expressions); }
 
+  public override void SetFlags()
+  { ClearsStack = HasExcept(Expressions);
+    Interrupts  = HasInterrupt(Expressions);
+  }
+
   public override void Walk(IWalker w)
   { if(w.Walk(this)) foreach(Node n in Expressions) n.Walk(w);
     w.PostWalk(this);
   }
   
   public readonly Node[] Expressions;
+}
+#endregion
+
+#region ListCompNode
+public sealed class ListCompNode : WrapperNode
+{ public ListCompNode(Node item, For[] fors, bool yieldResult)
+  { /* [x*y for x in vec1 if odd(x) for y in vec2 if even(y)]
+    
+      bind(x,y,_e=iter(vec1),_lst=[])
+        for x in _e
+          if odd(x)
+            for y in vec2
+              if even(y)
+                _lst.Add(x*y)
+
+      bind(x,y,_e=iter(vec1))
+       for x in _e
+          if odd(x)
+            for y in vec2
+              if even(y)
+                yield x*y
+    */
+
+    using(CachedArray names=CachedArray.Alloc(), inits=CachedArray.Alloc(), types=CachedArray.Alloc())
+    { Name listName = yieldResult ? null : new Name(Options.Current.Language.GenerateName(null, "list"));
+
+      for(int i=0; i<fors.Length; i++)
+      { foreach(Name n in fors[i].Names)
+        { if(names.Contains(n.String)) throw Ops.SyntaxError(this, "duplicate loop variable: "+n.String);
+          names.Add(n.String);
+          inits.Add(null);
+          types.Add(null);
+        }
+      }
+
+      if(!yieldResult)
+      { names.Add(listName.String);
+        inits.Add(new ListNode());
+        types.Add(typeof(IList));
+      }
+
+      Node = yieldResult ? new YieldNode(item) : (Node)new AddItemNode(new VariableNode(listName), item);
+      for(int i=fors.Length-1; i>=0; i--)
+      { if(fors[i].Test!=null) Node = new IfNode(fors[i].Test, Node);
+        Node = new ForNode(fors[i].Names, fors[i].List, Node, null);
+      }
+
+      if(!yieldResult) Node = new BodyNode(Node, new VariableNode(listName));
+      Node = new LocalBindNode((string[])names.ToArray(typeof(string)), (Node[])inits.ToArray(typeof(Node)),
+                               (Type[])types.ToArray(typeof(Type)), Node);
+    }
+  }
+  
+  public struct For
+  { public For(Name[] names, Node list, Node test) { Names=names; List=list; Test=test; }
+    public readonly Name[] Names;
+    public readonly Node List, Test;
+  }
+
+  sealed class AddItemNode : Node
+  { public AddItemNode(Node list, Node item) { List=list; Item=item; }
+
+    public override void Emit(CodeGenerator cg, ref Type etype)
+    { List.EmitTyped(cg, typeof(IList));
+      Item.Emit(cg);
+      cg.EmitCall(typeof(IList), "Add");
+      cg.ILG.Emit(OpCodes.Pop);
+      if(etype!=typeof(void))
+      { cg.EmitNull();
+        etype = typeof(object);
+      }
+      TailReturn(cg);
+    }
+
+    public override object Evaluate()
+    { ((IList)List.Evaluate()).Add(Item.Evaluate());
+      return null;
+    }
+
+    public override Type GetNodeType() { return typeof(void); }
+
+    public override void MarkTail(bool tail)
+    { Tail = tail;
+      List.MarkTail(false);
+      Item.MarkTail(false);
+    }
+
+    public override void SetFlags()
+    { ClearsStack = HasExcept(List, Item);
+      Interrupts  = HasInterrupt(List, Item);
+    }
+
+    public override void Walk(IWalker w)
+    { if(w.Walk(this))
+      { List.Walk(w);
+        Item.Walk(w);
+      }
+      w.PostWalk(this);
+    }
+
+    public readonly Node List, Item;
+  }
 }
 #endregion
 
@@ -1124,6 +1245,10 @@ public sealed class LockNode : ExceptionNode
       cg.FreeLocalTemp(s);
     }
     slots = null;
+  }
+
+  public override void Postprocess()
+  { if(Yields!=null) throw Ops.SyntaxError(this, "'yield' cannot occur with a lock statement");
   }
 
   Slot[] slots;
@@ -1238,7 +1363,20 @@ public sealed class ReprNode : WrapperNode
     TailReturn(cg);
   }
 
+  public override object Evaluate() { return Ops.Repr(Node.Evaluate()); }
   public override Type GetNodeType() { return typeof(string); }
+
+  public override void MarkTail(bool tail)
+  { Tail = tail;
+    Node.MarkTail(false);
+  }
+}
+#endregion
+
+#region ReturnNode
+public sealed class ReturnNode : BreakNode
+{ public ReturnNode() : base("*FUNCTION*") { }
+  public ReturnNode(Node returnValue) : base("*FUNCTION*", returnValue) { }
 }
 #endregion
 
@@ -1318,8 +1456,17 @@ public sealed class TupleNode : Node
     Tail = tail;
   }
   
-  public override void Optimize() { IsConstant = AreConstant(Expressions); }
+  public override void Optimize()
+  { IsConstant = true;
+    foreach(Node n in Expressions)
+      if(!n.IsConstant || (n is ListNode || n is HashNode || n is ListCompNode)) { IsConstant=false; break; }
+  }
   
+  public override void SetFlags()
+  { ClearsStack = HasExcept(Expressions);
+    Interrupts  = HasInterrupt(Expressions);
+  }
+
   public override void Walk(IWalker w)
   { if(w.Walk(this)) foreach(Node n in Expressions) n.Walk(w);
     w.PostWalk(this);
@@ -1382,6 +1529,10 @@ public sealed class UsingNode : ExceptionNode
       cg.FreeLocalTemp(s);
     }
     slots = null;
+  }
+
+  public override void Postprocess()
+  { if(Yields!=null) throw Ops.SyntaxError(this, "'yield' cannot occur with a lock statement");
   }
 
   Slot[] slots;
