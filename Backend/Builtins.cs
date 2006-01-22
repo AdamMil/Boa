@@ -64,7 +64,7 @@ argument is a complex number, its magnitude is returned.")]
   [DocString(@"callable(object) -> bool
 
 Return true if the object argument is callable, false if not.")]
-  public static object callable(object o) { return o is IProcedure; }
+  public static object callable(object o) { return Ops.IsProcedure(o); }
 
   [DocString(@"chr(i) -> str
 
@@ -110,7 +110,7 @@ removed.
 Note that filter(function, list) is equivalent to [item for item in list if function(item)] if function is not null and
 [item for item in list if item] if function is null.")]
   public static object filter(object function, object seq)
-  { IProcedure proc = function as IProcedure;
+  { IProcedure proc = Ops.MakeProcedure(function);
     if(proc==null && function!=null) Ops.ExpectProcedure(function);
 
     object[] args;
@@ -162,7 +162,7 @@ list arguments, map() returns a list consisting of tuples containing the
 corresponding items from all lists (a kind of transpose operation). The list
 arguments may be any kind of sequence; the result is always a list.")]
   public static List map(object function, object seq)
-  { IProcedure proc = function as IProcedure;
+  { IProcedure proc = Ops.MakeProcedure(function);
     List ret;
     IEnumerator e;
 
@@ -191,7 +191,7 @@ arguments may be any kind of sequence; the result is always a list.")]
   { if(seqs.Length==0) throw new ArgumentException("map(): at least 2 arguments required");
     if(seqs.Length==1) return map(function, seqs[0]);
 
-    IProcedure proc = function as IProcedure;
+    IProcedure proc = Ops.MakeProcedure(function);
     object[] args;
     bool realloc;
 
