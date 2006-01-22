@@ -4,7 +4,7 @@ which is similar to python. This implementation is both interpreted
 and compiled, targetting the Microsoft .NET Framework.
 
 http://www.adammil.net/
-Copyright (C) 2005 Adam Milazzo
+Copyright (C) 2005-2006 Adam Milazzo
 
 This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License
@@ -283,15 +283,14 @@ public sealed class Parser
         Eat(Token.RBracket);
         expr = new IndexNode(expr, start);
       }
-      else if(TryEat(Token.StaticMember)) expr = new MemberNode(expr, new LiteralNode(ParseIdentifier()));
+      else if(TryEat(Token.StaticMember)) expr = new GetSlotNode(expr, new LiteralNode(ParseIdentifier()));
       else if(TryEat(Token.Period))
-      { Argument[] extraArgs = null;
-        string member = ParseIdentifier();
-        if(token==Token.LParen)
-        { extraArgs = ParseArguments();
+      { Node member = new LiteralNode(ParseIdentifier());
+        if(token!=Token.LParen) expr = new GetPropertyNode(expr, member);
+        else
+        { expr = new CallPropertyNode(expr, member, ParseArguments());
           Eat(Token.RParen);
         }
-        expr = new PropertyNode(expr, new LiteralNode(member), extraArgs);
       }
       else return expr;
     }
@@ -400,10 +399,10 @@ public sealed class Parser
       while(TryEat(Token.Assign))
       { if(op!=null)
         { if(list.Count>0) SyntaxError("can't chain in-place assignment");
-          if(!(lhs is VariableNode || lhs is MemberNode || lhs is IndexNode))
+          if(!(lhs is VariableNode || lhs is GetSlotNode || lhs is IndexNode))
             SyntaxError("can't do in-place assignment with {0}", lhs.GetType());
         }
-        else if(!(lhs is VariableNode || lhs is MemberNode || lhs is TupleNode || lhs is IndexNode))
+        else if(!(lhs is VariableNode || lhs is GetSlotNode || lhs is TupleNode || lhs is IndexNode))
           SyntaxError("can't assign to {0}", lhs.GetType());
         list.Add(lhs);
         lhs = ParseExpression();
@@ -867,7 +866,7 @@ public sealed class Parser
           bareTuples = false;
           do
           { Node e = ParseExpression();
-            if(!(e is VariableNode || e is MemberNode || e is TupleNode || e is IndexNode))
+            if(!(e is VariableNode || e is GetSlotNode || e is TupleNode || e is IndexNode))
               SyntaxError("can't delete {0}", e.GetType());
             list.Add(e);
           } while(TryEat(Token.Comma));
@@ -996,6 +995,12 @@ public sealed class Parser
     return nextToken = ReadToken(ref nextValue);
   }
 
+  void PushBack()
+  { if(pos==0) throw new InvalidOperationException();
+    pos--;
+    lastChar = '\0';
+  }
+
   char ReadChar()
   { char c;
     if(lastChar!=0) { c=lastChar; lastChar='\0'; return c; }
@@ -1038,28 +1043,31 @@ public sealed class Parser
         }
 
         string s=string.Empty;
-        bool period=false, hex=false;
+        bool period=false, hex=false, lastPeriod=false;
 
         while(true)
         { if(c=='.')
-          { if(hex) break;
-            if(period) SyntaxError("invalid number");
-            period = true;
+          { if(hex || lastPeriod) break;
+            lastPeriod = true;
+            c = '\0';
+            if(period) break;
+            goto nextchar;
           }
           else if(!char.IsDigit(c) && (!hex || (c<'a' || c>'f') && (c<'A' || c>'F')))
           { if(!hex && (c=='x' || c=='X') && s=="0") { s=string.Empty; hex=true; goto nextchar; }
             break;
           }
+          else if(lastPeriod) { s+="."; period=true; lastPeriod=false; }
           s += c;
           nextchar: c = ReadChar();
         }
 
         try
-        { if(char.ToUpper(c)=='J')
+        { if(!lastPeriod && char.ToUpper(c)=='J')
           { if(hex) SyntaxError("'J' modifier cannot be used with hex numbers");
             value = new Complex(0, double.Parse(s));
           }
-          else if(char.ToUpper(c)=='E')
+          else if(!lastPeriod && char.ToUpper(c)=='E')
           { if(hex) SyntaxError("'E' modifier cannot be used with hex numbers");
             double num=double.Parse(s), exp;
             bool   neg=false;
@@ -1083,13 +1091,19 @@ public sealed class Parser
             else { lastChar=c; value = double.Parse(s); }
           }
           else
-          { if(char.ToUpper(c)!='L') lastChar=c;
+          { if(char.ToUpper(c)!='L') lastChar = c;
             try { value = hex ? Convert.ToInt32(s, 16) : int.Parse(s); }
             catch(OverflowException)
             { try { value = hex ? Convert.ToInt64(s, 16) : long.Parse(s); }
               catch(OverflowException) { value = Integer.Parse(s, hex ? 16 : 10); }
             }
           }
+
+          if(lastPeriod)
+          { if(lastChar!=0) PushBack();
+            lastChar = '.';
+          }
+
           return Token.Literal;
         }
         catch(FormatException) { SyntaxError("invalid number"); }

@@ -19,9 +19,26 @@ along with this program; if not, write to the Free Software
 Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 */
 
+using System;
+using System.Collections;
+using System.IO;
+using System.Reflection;
 using Scripting;
 
 namespace Boa.Backend
 {
 
-} // namespace Boa.Backend
+public sealed class Builtins
+{ public static MemberContainer Instance
+  { get
+    { if(instance==null) instance = Importer.Load(typeof(Builtins));
+      return instance;
+    }
+  }
+
+  public static List dir(object o) { return new List(MemberContainer.FromObject(o).GetMemberNames(true)); }
+
+  static MemberContainer instance;
+}
+
+} // namespace NetLisp.Backend

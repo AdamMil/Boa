@@ -4,7 +4,7 @@ which is similar to python. This implementation is both interpreted
 and compiled, targetting the Microsoft .NET Framework.
 
 http://www.adammil.net/
-Copyright (C) 2005 Adam Milazzo
+Copyright (C) 2005-2006 Adam Milazzo
 
 This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License
@@ -26,6 +26,263 @@ using System.Reflection.Emit;
 using Scripting;
 
 // TODO: optimize by not using temporaries for constant expressions
+
+/*
+  Implement?: calling of operator overloads for classes? eg, a+b can call A.op_Addition(a, b)
+
+  Slots, etc:
+  
+  Type        Boa Syntax            Lisp Syntax         Implementation
+  -------------------------------------------------------------------------------------------
+  DeleteSlot  del o::m              (.del-slot o "m")   MC.FromObject(o).DeleteSlot(o, "m")
+  GetSlot     o::m                  (.get-slot o "m")   MC.FromObject(o).GetSlot(o, "m")
+  SetSlot     o::m = v              (.set-slot o "m" v) MC.FromObject(o).SetSlot(o, "m", v)
+  GetProperty o.m                   o{m}                MC.FromObject(o).GetProperty(o, "m")
+  SetProperty o.m = v               o{set/m v}          MC.FromObject(o).SetProperty(o, "m", v)
+  Call        o.m(v)                o{m v}              MC.FromObject(o).CallProperty(o, "m", [o,v])
+  Accessor    getAccessor(o, "m")   o.m                 MC.FromObject(o).GetAccessor(o, "m")
+
+  Type        Default behavior of MemberContainer, if a slot is not a property
+  ----------------------------------------------------------------------------
+  GetSlot     N/A
+  SetSlot     N/A
+  GetProperty Gets raw slot
+  SetProperty Sets raw slot
+  Call        Casts raw slot to a function and calls it
+  Accessor    Returns an object that gets/sets the "m" slot of an object
+
+  .NET field  Behavior
+  ------------------------------------------------------
+  GetProperty returns value
+  SetProperty sets value
+  Call        gets/sets value if correct args, else error
+  Accessor    returns raw method
+
+  .NET property
+  ------------------------------------------------------
+  GetProperty returns value if 0 arguments, else error
+  SetProperty sets value if 0 arguments, else error
+  Call        gets/sets value if correct arguments, else error
+  Accessor    returns object for getting and setting
+
+  .NET method
+  ------------------------------------------------------
+  GetProperty if static or instance==null, returns raw method. otherwise returns instance-wrapped method
+  SetProperty not implemented
+  Call        calls raw method
+  Accessor    returns raw method
+
+  .NET event
+  ------------------------------------------------------
+  GetProperty returns instance-wrapped object that exposes add/remove functions
+  SetProperty not implemented
+  Call        raises event
+  Accessor    returns object that raises "m" events on objects
+
+  Script slot (not a property, none implemeted, all default behaviors)
+
+  Script method (an instance-wrapped function)
+  ------------------------------------------------------
+  GetProperty returns self
+  SetProperty not implemented
+  Call        replaces first argument with bound instance and calls raw function
+              [note that this applies to the o.m(v) syntax. f=o.m; f(v) results in it being called and allocating a
+               new array, and sticking the bound instance first]
+  Accessor    returns raw (unwrapped) function
+
+  Script property (a function wrapping get/set functions)
+  ------------------------------------------------------
+  GetProperty calls get method with instance (error if no get method)
+  SetProperty calls set method with instance (error if no set method)
+  Call        calls get/set method if there's only one of them. otherwise, error
+  Accessor    returns get/set if there's only one of them. otherwise, error
+
+  interface IProperty
+  { object Get(object instance);
+    object Set(object instance, object value);
+    object Call(object instance, object[] args);
+    object GetAccessor(object instance);
+  }
+
+
+
+  Classes:
+  
+  Each base class can be inherited from on the .NET level or not.
+  Slots can be added to classes, which are basically fields. Slots can have any type.
+
+  If .NET inheritence, there will be the option of automatically stubbing out all abstract methods (including those from
+  interfaces). There will also be the option to implement specific methods (which must be specified at Node creation
+  time), and for each one, to implement them statically or dynamically. Statically means that the method body is
+  compiled into the .NET function. Dynamically means that the method body is a stub like that created for abstract
+  methods, which will look for a slot of a certain name and call that at runtime.
+  
+  Static methods should be able to have heavier optimization applied, since we'll know the types of all the parameters
+  (including the 'this' pointer) and that'll give us the type information of all member lookups, etc. Using Slots can
+  allow further optimizations, since we'll be able to avoid boxing/unboxing when working with them.
+
+  If the class inherits from base classes on the .NET level but doesn't implement all abstract methods, the class will
+  be marked as abstract. If it only inherits from .NET classes and has no dynamic methods (including "stubs"), no
+  scripting-specific stuff will be added to it.
+
+  Scripting-specific stuff includes a dictionary of instance-level slots, and some kind of API (perhaps an interface)
+  for retrieving slots (which will search instance-level slots before type-level slots). Perhaps this will be done with
+  a specialized MemberClass, or by creating some kind of IObject interface and deriving MemberClass from it, or
+  something. But basically, we should be able to call some kind of GetSlot() or GetValue() method both inside the class
+  and outside, and it should be efficient.
+  
+  The class has the option of being sealed, in which case it cannot be inherited from on the .NET level.
+  
+  Multiple inheritence is supported, but of course not from .NET types. Only one .NET class can be inherited from, at
+  the most. The other classes must use script-level inheritence. Multiple inheritence is handled by the function to
+  get a slot's value. It searches parent classes in a special order.
+
+  The above should provide the ability to create fully static types, fully dynamic types, or a mixtures.
+  
+  Here's an example of a fully static class (not actual Boa syntax):
+  
+  [NoScript,Sealed] class foo : [.NET] IEnumerator
+    [Slot,List] list
+    [Slot,int] i
+    [Slot] current
+
+    def foo(self, list) { self.list = list; }
+    def get_Current(self): return self.current
+    def Reset(self): self.i = 0
+
+    def MoveNext(self)
+      if self.i==self.list.Count: return false
+      self.current = self.list[self.i]
+      self.i += 1
+      return true
+
+  public sealed class foo$1 : IEnumerator
+  { public List list;
+    public int i;
+    public object current;
+    
+    public foo$1(object list) { list = (List)list; }
+    public object Current { get { return current; } }
+    public void Reset() { i = 0; }
+
+    public bool MoveNext()
+    { if(i==list.Count) return false;
+      current = list[i]
+      i += 1;
+      return true;
+    }
+  }
+
+  Here's an example of a mixed-style class:
+
+  class foo : [.NET] IEnumerator
+    [Slot,List] list
+    [Slot,int] i
+    [Slot] current
+
+    [Dynamic] def foo(self, list) { self.list = list; }
+    [Dynamic] def get_Current(self): return self.current
+    [Dynamic] def Reset(self): self.i = 0
+
+    [Dynamic]
+    def MoveNext(self)
+      if self.i==self.list.Count: return false
+      self.current = self.list[self.i]
+      self.i += 1
+      return true
+
+  public class foo$1 : IEnumerator, IHasInstanceDict
+  { public List list;
+    public int i;
+    public object current;
+
+    protected IDictionary IHasInstanceDict.InstanceDict { get { return localDict; } }
+    protected bool IHasInstanceDict.GetLocalSlot(string name, out object ret);
+    protected void IHasInstanceDict.SetLocalSlot(string name, object value);
+    ...
+
+    static foo$1()
+    { staticHash["foo"] = cons$1;
+      staticHash["get_Current"] = get_Current$1;
+      staticHash["Reset"] = Reset$1;
+      staticHash["MoveNext"] = MoveNext$1;
+    }
+
+    public foo$1(params object[] args) { GetFuncSlot("foo").Call(AddThis(args)); }
+    public object Current { get { return GetFuncSlot("get_Current").Call(this); } }
+    public void Reset() { GetFuncSlot("Reset").Call(this) }
+    public bool MoveNext() { return (bool)GetFuncSlot("MoveNext").Call(this); }
+
+    public static object cons$1(LocalEnvironment env, object[] args) { Ops.SetValue(args[0], "list", args[1]); return null; }
+    public static object get_Current$1(LocalEnvironment env, object[] args) { return Ops.GetValue(args[0], "current"); }
+    public static object Reset$1(LocalEnvironment env, object[] args) { Ops.SetValue(args[0], "i", 0); return null; }
+    public static object MoveNext$1(LocalEnvironment env, object[] args)
+    { if(Ops.AreEqual(Ops.GetValue(args[0], "i"), Ops.GetValue(Ops.GetValue(args[0], "list"), "Count")))
+        return Ops.FALSE;
+      Ops.SetValue(args[0], "current", Ops.Index(Ops.GetValue(args[0], "list"), Ops.GetValue(args[0], "i")));
+      Ops.SetValue(args[0], "i", Ops.Add(Ops.GetValue(args[0], "i"), 1));
+      return Ops.TRUE;
+    }
+    
+    protected IDictionary localDict;
+    static IDictionary staticHash;
+  }
+
+  Here's an example of a script-only class:
+
+  class foo
+    list = i = current = null
+
+    def foo(self, list) { self.list = list; }
+    def get_Current(self): return self.current
+    def Reset(self): self.i = 0
+    def MoveNext(self)
+      if self.i==self.list.Count: return false
+      self.current = self.list[self.i]
+      self.i += 1
+      return true
+
+  public class foo$1 : IHasInstanceDict
+  { public List list;
+    public int i;
+    public object current;
+
+    protected IDictionary IHasInstanceDict.InstanceDict { get { return localDict; } }
+    protected bool IHasInstanceDict.GetLocalSlot(string name, out object ret);
+    protected void IHasInstanceDict.SetLocalSlot(string name, object value);
+    ...
+
+    static foo$1()
+    { staticHash["foo"] = cons$1;
+      staticHash["get_Current"] = get_Current$1;
+      staticHash["Reset"] = Reset$1;
+      staticHash["MoveNext"] = MoveNext$1;
+      staticHash["list"] = null;
+      staticHash["i"] = null;
+      staticHash["current"] = null;
+    }
+
+    public foo$1(params object[] args)
+    { IProcedure proc = GetFuncSlotNoThrow("foo");
+      if(proc!=null) proc.Call(AddThis(args));
+    }
+
+    public static object cons$1(LocalEnvironment env, object[] args) { Ops.SetValue(args[0], "list", args[1]); return null; }
+    public static object get_Current$1(LocalEnvironment env, object[] args) { return Ops.GetValue(args[0], "current"); }
+    public static object Reset$1(LocalEnvironment env, object[] args) { Ops.SetValue(args[0], "i", 0); return null; }
+    public static object MoveNext$1(LocalEnvironment env, object[] args)
+    { if(Ops.AreEqual(Ops.GetValue(args[0], "i"), Ops.GetValue(Ops.GetValue(args[0], "list"), "Count")))
+        return Ops.FALSE;
+      Ops.SetValue(args[0], "current", Ops.Index(Ops.GetValue(args[0], "list"), Ops.GetValue(args[0], "i")));
+      Ops.SetValue(args[0], "i", Ops.Add(Ops.GetValue(args[0], "i"), 1));
+      return Ops.TRUE;
+    }
+    
+    protected IDictionary localDict;
+    static IDictionary staticHash;
+  }
+*/
+
 namespace Boa.Backend
 {
 
@@ -172,7 +429,8 @@ public sealed class AST
 
 #region BoaLanguage
 public sealed class BoaLanguage : Language
-{ public override string BuiltinsNamespace { get { return "Boa.Mods"; } }
+{ public override MemberContainer Builtins { get { return Backend.Builtins.Instance; }}
+  public override string BuiltinsNamespace { get { return "Boa.Mods"; } }
   public override string Name { get { return "Boa"; } }
 
   #region Ops
@@ -232,6 +490,34 @@ public sealed class BoaLanguage : Language
   }
 
   public override bool ExcludeFromImport(string name) { return name.StartsWith("_"); }
+
+  public override bool IsConstant(object value)
+  { if(base.IsConstant(value)) return true;
+
+    Tuple tup = value as Tuple;
+    if(tup!=null)
+    { foreach(object o in tup.items) if(!IsConstant(o)) return false;
+      return true;
+    }
+    
+    Slice slice = value as Slice;
+    if(slice!=null) return IsConstant(slice.start) && IsConstant(slice.stop) && IsConstant(slice.step);
+
+    List list = value as List;
+    if(list!=null)
+    { foreach(object o in list) if(!IsConstant(o)) return false;
+      return true;
+    }
+    
+    Dict dict = value as Dict;
+    if(dict!=null)
+    { foreach(DictionaryEntry de in dict) if(!IsConstant(de.Value) || !IsConstant(de.Key)) return false;
+      return true;
+    }
+    
+    return false;
+  }
+
   public override bool IsHashableConstant(object value) { return value is Tuple || value is Slice; }
   public override bool IsTrue(object value) { return BoaOps.IsTrue(value); }
 
@@ -934,8 +1220,9 @@ public sealed class ImportFromNode : SetNodeBase
     else // inside, we set local variables (Names shouldn't be null)
       for(int i=0; i<Names.Length; i++)
       { if(i!=Names.Length-1) cg.Dup();
+        cg.Dup();
         cg.EmitString(Names[i]);
-        cg.EmitCall(typeof(MemberContainer), "GetSlot", typeof(string));
+        cg.EmitCall(typeof(MemberContainer), "GetSlot", typeof(object), typeof(string));
         cg.EmitSet(AsNames[i]);
       }
 
@@ -954,7 +1241,7 @@ public sealed class ImportFromNode : SetNodeBase
         mc.Import(Scripting.TopLevel.Current, Names, asNames);
       }
     }
-    else for(int i=0; i<Names.Length; i++) ie.Set(AsNames[i].String, mc.GetSlot(Names[i]));
+    else for(int i=0; i<Names.Length; i++) ie.Set(AsNames[i].String, mc.GetSlot(mc, Names[i]));
     return null;
   }
 
@@ -1189,7 +1476,7 @@ public sealed class LockNode : ExceptionNode
       object[] arr = new object[tup.Expressions.Length];
       for(int i=0; i<arr.Length; i++)
       { arr[i] = tup.Expressions[i].Evaluate();
-        if(arr[i]==null) throw Ops.ValueError("cannot lock a null value");
+        if(arr[i]==null) throw new ArgumentException("cannot lock a null value");
       }
       for(int i=0; i<arr.Length; i++) System.Threading.Monitor.Enter(arr[i]);
       try { return Body.Evaluate(); }
@@ -1197,7 +1484,7 @@ public sealed class LockNode : ExceptionNode
     }
     else
     { object o = Lock.Evaluate();
-      if(o==null) throw Ops.ValueError("cannot lock a null value");
+      if(o==null) throw new ArgumentException("cannot lock a null value");
       lock(o) return Body.Evaluate();
     }
   }
@@ -1228,7 +1515,7 @@ public sealed class LockNode : ExceptionNode
     
     if(locks.Length!=1) cg.ILG.MarkLabel(evil);
     cg.EmitString("cannot lock a null value");
-    cg.EmitCall(typeof(Ops), "ValueError", typeof(string));
+    cg.EmitNew(typeof(ArgumentException), typeof(string));
     cg.ILG.Emit(OpCodes.Throw);
     
     cg.ILG.MarkLabel(good);
