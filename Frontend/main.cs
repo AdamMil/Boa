@@ -54,7 +54,7 @@ public class TextFrontend
 
       try
       { Node node = Options.Current.Language.Parse("<interactive>", code);
-        Console.WriteLine(Ops.Repr(Compiled ? SnippetMaker.Generate(Scripting.AST.CreateCompiled(node)).Run(null)
+        Console.WriteLine(Ops.ToCode(Compiled ? SnippetMaker.Generate(Scripting.AST.CreateCompiled(node)).Run(null)
                                             : Scripting.AST.Create(node).Evaluate()));
       }
       catch(Exception e) { Console.WriteLine("ERROR: "+e.ToString()); }

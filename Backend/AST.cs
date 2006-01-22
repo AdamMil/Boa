@@ -533,8 +533,8 @@ public sealed class BoaLanguage : Language
   { return AST.Create(new Parser(sourceName, data).Parse());
   }
 
-  #region Repr
-  public override string Repr(object obj)
+  #region ToCode
+  public override string ToCode(object obj)
   { switch(Convert.GetTypeCode(obj))
     { case TypeCode.Boolean: return (bool)obj ? "true" : "false";
       case TypeCode.Double: return ((double)obj).ToString("R");
@@ -542,7 +542,7 @@ public sealed class BoaLanguage : Language
       case TypeCode.Int64: case TypeCode.UInt64: return obj.ToString()+'L';
       case TypeCode.Object:
         if(obj is IRepresentable) return ((IRepresentable)obj).ToCode();
-        if(obj is Array) return ArrayOps.Repr((Array)obj);
+        if(obj is Array) return ArrayOps.ToCode((Array)obj);
         break;
       case TypeCode.Single: return ((float)obj).ToString("R");
       case TypeCode.String: return StringOps.Escape((string)obj);
@@ -556,7 +556,7 @@ public sealed class BoaLanguage : Language
   }
   #endregion
 
-  public override string Repr(Node node) { throw new NotImplementedException("node repr"); }
+  public override string ToCode(Node node) { throw new NotImplementedException("node repr"); }
   
   #region TypeName
   public override string TypeName(Type type)
@@ -837,13 +837,9 @@ public sealed class AssignNode : SetNode
   }
 
   protected override void GetMutatedNames(IList names, Node lhs)
-  { VariableNode vn = lhs as VariableNode;
-    if(vn!=null) names.Add(new MutatedName(vn.Name, null));
-    else
-    { TupleNode tn = lhs as TupleNode;
-      if(tn!=null) foreach(Node n in tn.Expressions) GetMutatedNames(names, n);
-      else if(!(lhs is IndexNode)) throw UnhandledNodeType(lhs);
-    }
+  { TupleNode tn = lhs as TupleNode;
+    if(tn!=null) foreach(Node n in tn.Expressions) GetMutatedNames(names, n);
+    else if(!(lhs is IndexNode)) base.GetMutatedNames(names, lhs);
   }
 
   protected override void UpdateNames(MutatedName[] names, ref int i, Node lhs)
@@ -1164,9 +1160,8 @@ public sealed class ImportNode : WrapperNode
 { public ImportNode(string[] names, string[] asNames)
   { Node[] assigns = new Node[names.Length];
     for(int i=0; i<names.Length; i++)
-      assigns[i] = new AssignNode(new VariableNode(names[i]),
-                                  new ImportOneNode(asNames[i]==null ? names[i] : asNames[i], 
-                                                    asNames[i]==null));
+      assigns[i] = new AssignNode(new VariableNode(asNames[i]==null ? names[i] : asNames[i]),
+                                  new ImportOneNode(names[i], asNames[i]==null));
     Node = new BodyNode(assigns);
   }
 
@@ -1645,12 +1640,12 @@ public sealed class ReprNode : WrapperNode
   { if(IsConstant) cg.EmitConstantObject(Evaluate());
     else
     { Node.Emit(cg);
-      cg.EmitCall(typeof(Ops), "Repr");
+      cg.EmitCall(typeof(Ops), "ToCode");
     }
     TailReturn(cg);
   }
 
-  public override object Evaluate() { return Ops.Repr(Node.Evaluate()); }
+  public override object Evaluate() { return Ops.ToCode(Node.Evaluate()); }
   public override Type GetNodeType() { return typeof(string); }
 
   public override void MarkTail(bool tail)

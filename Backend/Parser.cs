@@ -402,7 +402,7 @@ public sealed class Parser
           if(!(lhs is VariableNode || lhs is GetSlotNode || lhs is IndexNode))
             SyntaxError("can't do in-place assignment with {0}", lhs.GetType());
         }
-        else if(!(lhs is VariableNode || lhs is GetSlotNode || lhs is TupleNode || lhs is IndexNode))
+        else if(!(lhs is VariableNode || lhs is GetSlotBase || lhs is TupleNode || lhs is IndexNode))
           SyntaxError("can't assign to {0}", lhs.GetType());
         list.Add(lhs);
         lhs = ParseExpression();
