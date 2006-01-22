@@ -4,7 +4,7 @@ which is similar to python. This implementation is both interpreted
 and compiled, targetting the Microsoft .NET Framework.
 
 http://www.adammil.net/
-Copyright (C) 2005 Adam Milazzo
+Copyright (C) 2005-2006 Adam Milazzo
 
 This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License
@@ -63,8 +63,8 @@ public sealed class ArrayOps
     return aa.Length==ab.Length ? 0 : aa.Length<ab.Length ? -1 : 1;
 
     badTypes:
-    throw Ops.TypeError("invalid operand types for sequence comparison: '{0}' and '{1}'",
-                        Ops.TypeName(a), Ops.TypeName(b));
+    throw Ops.ArgError("invalid operand types for sequence comparison: '{0}' and '{1}'",
+                       Ops.TypeName(a), Ops.TypeName(b));
   }
 
   public static int Compare(object[] arr1, int len1, object[] arr2, int len2)
@@ -100,8 +100,8 @@ public sealed class ArrayOps
     return a is Tuple ? new Tuple((object[])ret) : a is Array ? ret : (object)new List((object[])ret, ret.Length);
     
     badTypes:
-    throw Ops.TypeError("invalid operand types for sequence concatenation: '{0}' and '{1}'",
-                        Ops.TypeName(a), Ops.TypeName(b));
+    throw Ops.ArgError("invalid operand types for sequence concatenation: '{0}' and '{1}'",
+                       Ops.TypeName(a), Ops.TypeName(b));
   }
 
   public static object Multiply(object a, object b)
@@ -139,11 +139,11 @@ public sealed class ArrayOps
         bv = (int)ul;
         break;
       }
-      default: throw Ops.TypeError("invalid operand types for sequence multiplication: '{0}' and '{1}'",
-                                   Ops.TypeName(a), Ops.TypeName(b));
+      default: throw Ops.ArgError("invalid operand types for sequence multiplication: '{0}' and '{1}'",
+                                  Ops.TypeName(a), Ops.TypeName(b));
     }
     
-    if(bv<0) throw Ops.ValueError("multiplier for sequence multiplication cannot be negative");
+    if(bv<0) throw new ArgumentException("multiplier for sequence multiplication cannot be negative");
     if(bv==1) return a;
 
     Array source, dest;
@@ -332,7 +332,7 @@ public sealed class BoaOps
     else throw new ArgumentException("objects of type '"+Ops.TypeName(value)+"' cannot be on the right hand side of "+
                                      "a tuple assignment");
 
-    throw Ops.ValueError("wrong number of values to unpack");
+    throw new ArgumentException("wrong number of values to unpack");
   }
 
   public static void Print(object file, object o)
@@ -939,14 +939,14 @@ public sealed class StringOps
         else if(formats[i].Length==-2 || formats[i].Precision==-2) nodict=true;
         else dict=true;
       }
-      if(dict && nodict) throw Ops.TypeError("keyed format codes and non-keyed format codes (or codes with a "+
-                                             "length/precision of '#') mixed in format string");
+      if(dict && nodict) throw Ops.ArgError("keyed format codes and non-keyed format codes (or codes with a "+
+                                            "length/precision of '#') mixed in format string");
 
       arggot = tup==null ? 1 : tup.items.Length;
       if(tup==null && dict) getitem = Ops.GetProperty(args, "__getitem__");
-      else if(dict) throw Ops.TypeError("format requires a mapping");
-      else if(argwant!=arggot) throw Ops.TypeError("incorrect number of arguments for string formatting "+
-                                                   "(expected {0}, but got {1})", argwant, arggot);
+      else if(dict) throw Ops.ArgError("format requires a mapping");
+      else if(argwant!=arggot) throw Ops.ArgError("incorrect number of arguments for string formatting "+
+                                                  "(expected {0}, but got {1})", argwant, arggot);
 
       System.Text.StringBuilder sb = new System.Text.StringBuilder();
       for(int fi=0; fi<formats.Length; fi++)
@@ -1033,7 +1033,8 @@ public sealed class StringOps
           case 'r': sb.Append(Ops.Repr(GetArg(f.Key))); break;
           case 's': sb.Append(Ops.Str(GetArg(f.Key))); break;
           case '%': sb.Append('%'); break;
-          default: throw Ops.ValueError("unsupported format character '{0}' (0x{1:X})", f.Type, (int)f.Type);
+          default: throw new FormatException(string.Format("unsupported format character '{0}' (0x{1:X})",
+                                                           f.Type, (int)f.Type));
         }
       }
       if(pos<source.Length) sb.Append(source.Substring(pos));
@@ -1136,7 +1137,7 @@ public sealed class StringOps
         if(char.IsDigit(c))
         { int num = c-'0';
           if(m==null)
-          { if(c>'7') throw Ops.ValueError("invalid octal digit near string index {0}", pos);
+          { if(c>'7') throw new FormatException("invalid octal digit near string index "+pos.ToString());
             for(int i=1; i<3; i++)
             { c = ReadChar(s, ref pos);
               if(!char.IsDigit(c) || c>'7') { lastChar=c; break; }
@@ -1151,12 +1152,12 @@ public sealed class StringOps
               num = num*10 + (c-'0');
             }
             if(num<m.Groups.Count && m.Groups[num].Success) sb.Append(m.Groups[num].Value);
-            else throw Ops.ValueError("reference to group {0} found near string index {1}, "+
-                                      "but there are only {2} groups", num, pos, m.Groups.Count);
+            else throw new FormatException(string.Format("reference to group {0} found near string index {1}, "+
+                                                         "but there are only {2} groups", num, pos, m.Groups.Count));
           }
         }
         else switch(c)
-        { case '\0': throw Ops.ValueError("unterminated escape sequence");
+        { case '\0': throw new FormatException("unterminated escape sequence");
           case 'n': sb.Append('\n'); break;
           case 't': sb.Append('\t'); break;
           case 'g':
@@ -1167,9 +1168,11 @@ public sealed class StringOps
               else
               { string name = string.Empty;
                 while((c=ReadChar(s, ref pos))!='>' && c!=0) name += c;
-                if(c==0) throw Ops.ValueError("unterminated group name near string index {0}", pos);
+                if(c==0) throw new FormatException("unterminated group name near string index "+pos.ToString());
                 System.Text.RegularExpressions.Group g = m.Groups[name];
-                if(g==null) throw Ops.ValueError("nonexistant group '{0}' referenced near string index {1}", pos);
+                if(g==null)
+                  throw new FormatException(string.Format("nonexistant group '{0}' referenced near string index {1}",
+                                                          name, pos));
                 if(g.Success) sb.Append(g.Value);
               }
             }
@@ -1186,7 +1189,7 @@ public sealed class StringOps
             { c = ReadChar(s, ref pos);
               if(char.IsDigit(c)) num = (num<<4) | (c-'0');
               else if((c<'A' || c>'F') && (c<'a' || c>'f'))
-              { if(i==0) throw Ops.ValueError("expected hex digit near string index {0}", pos);
+              { if(i==0) throw new FormatException("expected hex digit near string index "+pos.ToString());
                 lastChar = c;
                 break;
               }
@@ -1197,7 +1200,7 @@ public sealed class StringOps
           }
           case 'c':
             c = ReadChar(s, ref pos);
-            if(!char.IsLetter(c)) throw Ops.ValueError("expected letter for \\c near string index {0}", pos);
+            if(!char.IsLetter(c)) throw new FormatException("expected letter for \\c near string index "+pos.ToString());
             sb.Append((char)(char.ToUpper(c)-64));
             break;
           default: sb.Append(c); break;
