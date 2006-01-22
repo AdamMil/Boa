@@ -27,6 +27,13 @@ using System.Reflection.Emit;
 using Scripting;
 using Boa.Backend;
 
+public sealed class Test
+{ public delegate double TestDelegate(int a, int b);
+  public static TestDelegate Delegate = new TestDelegate(Func);
+  public static double Call(TestDelegate del) { return del(10, 20); }
+  public static double Func(int a, int b) { return a + Math.Round(b/100.0, 2); }
+}
+
 namespace Boa.TextFrontend
 {
 
@@ -35,7 +42,7 @@ public class TextFrontend
   { TopLevel.Current = new TopLevel();
     MemberContainer builtins = Options.Current.Language.Builtins;
     if(builtins!=null) builtins.Import(TopLevel.Current);
-
+TopLevel.Current.Bind("t", ReflectedType.FromType(typeof(Test)));
     AppDomain.CurrentDomain.UnhandledException += new UnhandledExceptionEventHandler(UnhandledException);
 
     while(true)
