@@ -165,13 +165,13 @@ public sealed class ArrayOps
     return a is Tuple ? new Tuple((object[])dest) : a is Array ? dest : (object)new List((object[])dest, dest.Length);
   }
   
-  public static string Repr(Array arr)
+  public static string ToCode(Array arr)
   { System.Text.StringBuilder sb = new System.Text.StringBuilder();
     sb.Append(arr.GetType().FullName);
     sb.Append('(');
     for(int i=0; i<arr.Length; i++)
     { if(i>0) sb.Append(", ");
-      sb.Append(Ops.Repr(arr.GetValue(i)));
+      sb.Append(Ops.ToCode(arr.GetValue(i)));
     }
     sb.Append(')');
     return sb.ToString();
@@ -559,7 +559,7 @@ public sealed class List : IMutableSliceable, IList, IComparable, ICloneable, IR
 
   public Tuple ToTuple()
   { object[] ti = new object[count];
-    items.CopyTo(ti, 0);
+    Array.Copy(items, ti, count);
     return Tuple.Make(ti);
   }
 
@@ -769,7 +769,7 @@ public sealed class List : IMutableSliceable, IList, IComparable, ICloneable, IR
     sb.Append('[');
     for(int i=0; i<count; i++)
     { if(i>0) sb.Append(", ");
-      sb.Append(Ops.Repr(items[i]));
+      sb.Append(Ops.ToCode(items[i]));
     }
     sb.Append(']');
     return sb.ToString();
@@ -843,7 +843,7 @@ public sealed class Slice : IRepresentable
   public override string ToString() { return ToCode(); }
 
   public string ToCode()
-  { return string.Format("slice({0}, {1}, {2})", Ops.Repr(start), Ops.Repr(stop), Ops.Repr(step));
+  { return string.Format("slice({0}, {1}, {2})", Ops.ToCode(start), Ops.ToCode(stop), Ops.ToCode(step));
   }
 
   public readonly object start, stop, step;
@@ -1030,7 +1030,7 @@ public sealed class StringOps
             break;
           }
 
-          case 'r': sb.Append(Ops.Repr(GetArg(f.Key))); break;
+          case 'r': sb.Append(Ops.ToCode(GetArg(f.Key))); break;
           case 's': sb.Append(Ops.Str(GetArg(f.Key))); break;
           case '%': sb.Append('%'); break;
           default: throw new FormatException(string.Format("unsupported format character '{0}' (0x{1:X})",
@@ -1311,7 +1311,7 @@ public static Tuple Make(params object[] items) { return new Tuple(items); }
     sb.Append('(');
     for(int i=0; i<items.Length; i++)
     { if(i>0) sb.Append(", ");
-      sb.Append(Ops.Repr(items[i]));
+      sb.Append(Ops.ToCode(items[i]));
     }
     if(items.Length==1) sb.Append(',');
     sb.Append(')');
