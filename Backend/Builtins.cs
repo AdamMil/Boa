@@ -4,7 +4,7 @@ which is similar to python. This implementation is both interpreted
 and compiled, targetting the Microsoft .NET Framework.
 
 http://www.adammil.net/
-Copyright (C) 2005-2006 Adam Milazzo
+Copyright (C) 2004-2006 Adam Milazzo
 
 This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License
@@ -36,7 +36,7 @@ public sealed class Builtins
     }
   }
 
-public static void loadAssemblyByName(string name) { Interop.LoadAssemblyByName(name); }
+public static void loadAssemblyByName(string name) { Scripting.Backend.Interop.LoadAssemblyByName(name); }
 
   [DocString(@"abs(object) -> object
 
@@ -93,7 +93,7 @@ delattr(x, 'foobar') is equivalent to del x.foobar")]
 Without arguments, return the list of names in the current local symbol table. With an argument, attempts to return a
 list of valid attributes for that object. The resulting list is sorted alphabetically.")]
   public static List dir() { throw new NotImplementedException(); }
-  public static List dir(object o) { return new List(MemberContainer.FromObject(o).GetMemberNames(true)); }
+  public static List dir(object o) { return new List(MemberContainer.FromObject(o).GetMemberNames()); }
 
   [DocString(@"fancyCallable(object) -> bool
 

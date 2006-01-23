@@ -4,7 +4,7 @@ which is similar to python. This implementation is both interpreted
 and compiled, targetting the Microsoft .NET Framework.
 
 http://www.adammil.net/
-Copyright (C) 2005-2006 Adam Milazzo
+Copyright (C) 2004-2006 Adam Milazzo
 
 This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License
@@ -26,6 +26,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 using Scripting;
+using Scripting.Backend;
 
 namespace Boa.Backend
 {
