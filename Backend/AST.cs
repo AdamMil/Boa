@@ -21,6 +21,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 using System;
 using System.Collections;
+using System.Collections.Generic;
+using System.Collections.Specialized;
 using System.Reflection;
 using System.Reflection.Emit;
 using Scripting;
@@ -280,7 +282,7 @@ public sealed class AST
         func = node as LambdaNode;
         gen  = node as GeneratorNode;
 
-        if(names==null) names = CachedArray.Alloc();
+        if(names==null) names = CachedList<Name>.Alloc();
 
         int oldCount = baseCount;
         baseCount = names.Count;
@@ -294,13 +296,11 @@ public sealed class AST
         int pbase = baseCount+(func==null ? 0 : func.Parameters.Length); // discount the parameters
         if(pbase!=names.Count)
         { int numLocal = 0;
-          for(int i=pbase; i<names.Count; i++) if(((Name)names[i]).Depth!=Name.Global) numLocal++;
+          for(int i=pbase; i<names.Count; i++) if(names[i].Depth!=Name.Global) numLocal++;
           if(numLocal!=0)
           { string[] localNames = new string[numLocal];
             for(int i=pbase,j=0; i<names.Count; i++)
-            { Name name = (Name)names[i];
-              if(name.Depth!=Name.Global) localNames[j++] = name.String;
-            }
+              if(names[i].Depth!=Name.Global) localNames[j++] = names[i].String;
             if(func!=null) func.Body = new LocalBindNode(localNames, new Node[localNames.Length], func.Body);
             else gen.Body = new LocalBindNode(localNames, new Node[localNames.Length], gen.Body);
           }
@@ -317,17 +317,15 @@ public sealed class AST
         foreach(string str in gn.Names)
         { int i;
           for(i=names.Count-1; i>=0; i--)
-          { Name name = (Name)names[i];
-            if(name.String==str)
-            { if(name.Depth==0 || name.Depth==Name.Local && i<baseCount)
+            if(names[i].String==str)
+            { if(names[i].Depth==0 || names[i].Depth==Name.Local && i<baseCount)
                 throw Ops.SyntaxError(node, "'{0}' defined as both global and local", str); // parameter
-              else if(name.Depth==Name.Local)
+              else if(names[i].Depth==Name.Local)
               { throw Ops.SyntaxError(node, "'{0}' was assigned to before 'global' statement", str); // TODO: make this a warning
-                name.Depth = Name.Global;
+                names[i].Depth = Name.Global;
                 break;
               }
             }
-          }
           if(i==-1) names.Add(new Name(str, Name.Global));
         }
       }
@@ -335,7 +333,7 @@ public sealed class AST
       { if(func!=null)
           foreach(MutatedName mn in ((SetNodeBase)node).GetMutatedNames())
           { int i;
-            for(i=names.Count-1; i>=0; i--) if(((Name)names[i]).String==mn.Name.String) break;
+            for(i=names.Count-1; i>=0; i--) if(names[i].String==mn.Name.String) break;
             if(i==-1) names.Add(new Name(mn.Name.String, Name.Local));
           }
       }
@@ -343,7 +341,7 @@ public sealed class AST
       return true;
     }
 
-    CachedArray names;
+    CachedList<Name> names;
     LambdaNode func;
     GeneratorNode gen;
     int baseCount;
@@ -729,13 +727,13 @@ public sealed class AssignNode : SetNode
   }
 
   public override MutatedName[] GetMutatedNames()
-  { using(CachedArray names = CachedArray.Alloc())
+  { using(CachedList<MutatedName> names = CachedList<MutatedName>.Alloc())
     { foreach(Node n in LHS)
       { VariableNode vn = n as VariableNode; // treat top-level VariableNodes differently than nested ones because we
         if(vn!=null) names.Add(new MutatedName(vn.Name, RHS)); // can easily determine the value of a top-level one
         else GetMutatedNames(names, n);                        // (RHS), but a nested VariableNode is more complicated
       }
-      return (MutatedName[])names.ToArray(typeof(MutatedName));
+      return names.ToArray();
     }
   }
 
@@ -761,7 +759,7 @@ public sealed class AssignNode : SetNode
     else base.EmitSet(cg, lhs, onStack);
   }
 
-  protected override void GetMutatedNames(IList names, Node lhs)
+  protected override void GetMutatedNames(IList<MutatedName> names, Node lhs)
   { TupleNode tn = lhs as TupleNode;
     if(tn!=null) foreach(Node n in tn.Expressions) GetMutatedNames(names, n);
     else if(!(lhs is IndexNode)) base.GetMutatedNames(names, lhs);
@@ -988,7 +986,7 @@ public sealed class GlobalNode : MarkerNode
 
 #region HashNode
 public sealed class HashNode : Node
-{ public HashNode(params DictionaryEntry[] entries) { Entries = entries; }
+{ public HashNode(params KeyValuePair<Node,Node>[] entries) { Entries = entries; }
 
   public override void Emit(CodeGenerator cg, ref Type etype)
   { if(IsConstant)
@@ -1001,9 +999,9 @@ public sealed class HashNode : Node
 
       MethodInfo add = typeof(IDictionary).GetMethod("set_Item");
       if(!ClearsStack)
-      { foreach(DictionaryEntry de in Entries)
+      { foreach(KeyValuePair<Node,Node> de in Entries)
         { cg.Dup();
-          cg.EmitNodes((Node)de.Key, (Node)de.Value);
+          cg.EmitNodes(de.Key, de.Value);
           cg.EmitCall(add);
         }
         etype = typeof(Dict);
@@ -1011,13 +1009,12 @@ public sealed class HashNode : Node
       else
       { Slot tmp = cg.AllocLocalTemp(typeof(IDictionary)), a=null, b=null;
         tmp.EmitSet(cg);
-        foreach(DictionaryEntry de in Entries)
-        { Node key = (Node)de.Key, val = (Node)de.Value;
-          if(val.ClearsStack)
-          { key.Emit(cg);
+        foreach(KeyValuePair<Node,Node> de in Entries)
+        { if(de.Value.ClearsStack)
+          { de.Key.Emit(cg);
             if(a==null) a = cg.AllocLocalTemp(typeof(object));
             a.EmitSet(cg);
-            val.Emit(cg);
+            de.Value.Emit(cg);
             if(b==null) b = cg.AllocLocalTemp(typeof(object));
             b.EmitSet(cg);
             
@@ -1025,19 +1022,19 @@ public sealed class HashNode : Node
             a.EmitGet(cg);
             b.EmitGet(cg);
           }
-          else if(key.ClearsStack)
-          { key.Emit(cg);
+          else if(de.Key.ClearsStack)
+          { de.Key.Emit(cg);
             if(a==null) a = cg.AllocLocalTemp(typeof(object));
             a.EmitSet(cg);
             
             tmp.EmitGet(cg);
             a.EmitGet(cg);
-            val.Emit(cg);
+            de.Value.Emit(cg);
           }
           else
           { tmp.EmitGet(cg);
-            key.Emit(cg);
-            val.Emit(cg);
+            de.Key.Emit(cg);
+            de.Value.Emit(cg);
           }
           
           cg.EmitCall(add);
@@ -1053,30 +1050,29 @@ public sealed class HashNode : Node
 
   public override object Evaluate()
   { Dict dict = new Dict();
-    foreach(DictionaryEntry de in Entries)
-      dict[((Node)de.Key).Evaluate()] = ((Node)de.Value).Evaluate();
+    foreach(KeyValuePair<Node,Node> de in Entries) dict[de.Key.Evaluate()] = de.Value.Evaluate();
     return dict;
   }
 
   public override void MarkTail(bool tail)
-  { foreach(DictionaryEntry de in Entries) { ((Node)de.Key).MarkTail(false); ((Node)de.Value).MarkTail(false); }
+  { foreach(KeyValuePair<Node,Node> de in Entries) { de.Key.MarkTail(false); de.Value.MarkTail(false); }
     Tail = tail;
   }
 
   public override void Optimize()
   { bool isconst = true;
-    foreach(DictionaryEntry de in Entries)
-      if(!((Node)de.Key).IsConstant || !((Node)de.Value).IsConstant) { isconst=false; break; }
+    foreach(KeyValuePair<Node,Node> de in Entries)
+      if(!de.Key.IsConstant || !de.Value.IsConstant) { isconst=false; break; }
     IsConstant = isconst;
   }
 
   public override void Walk(IWalker w)
   { if(w.Walk(this))
-      foreach(DictionaryEntry de in Entries) { ((Node)de.Key).Walk(w); ((Node)de.Value).Walk(w); }
+      foreach(KeyValuePair<Node,Node> de in Entries) { de.Key.Walk(w); de.Value.Walk(w); }
     w.PostWalk(this);
   }
 
-  public readonly DictionaryEntry[] Entries;
+  public readonly KeyValuePair<Node,Node>[] Entries;
 }
 #endregion
 
@@ -1085,8 +1081,13 @@ public sealed class ImportNode : WrapperNode
 { public ImportNode(string[] names, string[] asNames)
   { Node[] assigns = new Node[names.Length];
     for(int i=0; i<names.Length; i++)
-      assigns[i] = new AssignNode(new VariableNode(asNames[i]==null ? names[i] : asNames[i]),
-                                  new ImportOneNode(names[i], asNames[i]==null));
+    { bool importTop = asNames[i]==null;
+      if(importTop)
+      { int index = names[i].IndexOf('.');
+        asNames[i] = index==-1 ? names[i] : names[i].Substring(0, index);
+      }
+      assigns[i] = new AssignNode(new VariableNode(asNames[i]), new ImportOneNode(names[i], importTop));
+    }
     Node = new BodyNode(assigns);
   }
 
@@ -1304,7 +1305,10 @@ public sealed class ListCompNode : WrapperNode
                 yield x*y
     */
 
-    using(CachedArray names=CachedArray.Alloc(), inits=CachedArray.Alloc(), types=CachedArray.Alloc())
+    CachedList<string> names = CachedList<string>.Alloc();
+    CachedList<Node> inits = CachedList<Node>.Alloc();
+    CachedList<Type> types = CachedList<Type>.Alloc();
+    try
     { Name listName = yieldResult ? null : new Name(Options.Current.Language.GenerateName(null, "list"));
 
       for(int i=0; i<fors.Length; i++)
@@ -1329,8 +1333,12 @@ public sealed class ListCompNode : WrapperNode
       }
 
       if(!yieldResult) Node = new BodyNode(Node, new VariableNode(listName));
-      Node = new LocalBindNode((string[])names.ToArray(typeof(string)), (Node[])inits.ToArray(typeof(Node)),
-                               (Type[])types.ToArray(typeof(Type)), Node);
+      Node = new LocalBindNode(names.ToArray(), inits.ToArray(), types.ToArray(), Node);
+    }
+    finally
+    { names.Dispose();
+      inits.Dispose();
+      types.Dispose();
     }
   }
   

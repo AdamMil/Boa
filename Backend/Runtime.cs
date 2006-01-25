@@ -193,14 +193,16 @@ public sealed class ArrayOps
 #endregion
 
 #region BoaHash
-public sealed class BoaHash : IHashCodeProvider
+public sealed class BoaHash : IEqualityComparer
 { BoaHash() { }
 
-  // FIXME: implement this
-  public int GetHashCode(object obj)
-  { return obj==null ? 0 : obj.GetHashCode();
+  bool IEqualityComparer.Equals(object x, object y) { return Ops.AreEqual(x, y); }
+
+  int IEqualityComparer.GetHashCode(object obj)
+  { // TODO: implement this properly (eg, 2.0 returns the same hash code as 2)
+    return obj==null ? 0 : obj.GetHashCode();
   }
-  
+
   public static readonly BoaHash Instance = new BoaHash();
 }
 #endregion
@@ -371,11 +373,11 @@ public sealed class Dict : IDictionary, IRepresentable
 { public Dict() { dict=new ListDictionary(); isList=true; }
   public Dict(int count)
   { dict = count<=10 ? (IDictionary)new ListDictionary(ScriptComparer.Default)
-                     : new Hashtable(count, BoaHash.Instance, ScriptComparer.Default);
+                     : new Hashtable(count, BoaHash.Instance);
     isList = count<=10;
   }
   public Dict(IDictionary d)
-  { if(d.Count>10) d = new Hashtable(d, BoaHash.Instance, ScriptComparer.Default);
+  { if(d.Count>10) d = new Hashtable(d, BoaHash.Instance);
     else
     { dict = new ListDictionary(ScriptComparer.Default);
       foreach(DictionaryEntry de in d) dict.Add(de.Key, de.Value);
@@ -442,7 +444,7 @@ public sealed class Dict : IDictionary, IRepresentable
 
   void MaybeConvert(int before)
   { if(isList && before<upThresh && dict.Count>=upThresh)
-    { dict = new Hashtable(dict, BoaHash.Instance, ScriptComparer.Default);
+    { dict = new Hashtable(dict, BoaHash.Instance);
       isList = false;
     }
     else if(!isList && before>downThresh && dict.Count<=downThresh)

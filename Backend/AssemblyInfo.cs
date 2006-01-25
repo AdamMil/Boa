@@ -33,5 +33,3 @@ using System.Runtime.CompilerServices;
 [assembly: AssemblyCopyright("Copyright 2005, Adam Milazzo")]
 
 [assembly: AssemblyVersion("0.5.0.0")]
-
-[assembly: AssemblyKeyFile("../../../Boa.snk")]
