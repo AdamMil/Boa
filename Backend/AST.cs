@@ -354,10 +354,15 @@ public sealed class AST
 public sealed class BoaLanguage : Language
 { public override MemberContainer Builtins { get { return Backend.Builtins.Instance; }}
   public override string BuiltinsNamespace { get { return "Boa.Mods"; } }
+  public override string FileExtensions { get { return ".boa"; } }
   public override string Name { get { return "Boa"; } }
 
   #region Ops
   public override int Compare(object a, object b) { return Ops.TypeName(a).CompareTo(Ops.TypeName(b)); }
+  public override object Modulus(object a, object b)
+  { string str = a as string;
+    return str==null ? base.Modulus(a, b) : StringOps.PrintF(str, b);
+  }
   #endregion
 
   #region EmitConstant
