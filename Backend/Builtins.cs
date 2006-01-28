@@ -93,7 +93,11 @@ delattr(x, 'foobar') is equivalent to del x.foobar")]
 Without arguments, return the list of names in the current local symbol table. With an argument, attempts to return a
 list of valid attributes for that object. The resulting list is sorted alphabetically.")]
   public static List dir() { throw new NotImplementedException(); }
-  public static List dir(object o) { return new List(MemberContainer.FromObject(o).GetMemberNames()); }
+  public static List dir(object o)
+  { List list = new List(MemberContainer.FromObject(o).GetMemberNames());
+    list.Sort();
+    return list;
+  }
 
   [DocString(@"fancyCallable(object) -> bool
 

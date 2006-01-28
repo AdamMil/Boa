@@ -488,7 +488,8 @@ public sealed class BoaLanguage : Language
   
   #region TypeName
   public override string TypeName(Type type)
-  { switch(Type.GetTypeCode(type))
+  { if(type!=null && type.IsEnum) return type.FullName;
+    switch(Type.GetTypeCode(type))
     { case TypeCode.Boolean: return "bool";
       case TypeCode.Empty: return "null";
       case TypeCode.Byte:  return "byte";
