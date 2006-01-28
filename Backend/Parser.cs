@@ -397,7 +397,7 @@ public sealed class Parser
       while(TryEat(Token.Assign))
       { if(op!=null)
         { if(list.Count>0) SyntaxError("can't chain in-place assignment");
-          if(!(lhs is VariableNode || lhs is GetSlotNode || lhs is IndexNode))
+          if(!(lhs is VariableNode || lhs is GetSlotBase || lhs is IndexNode))
             SyntaxError("can't do in-place assignment with {0}", lhs.GetType());
         }
         else if(!(lhs is VariableNode || lhs is GetSlotBase || lhs is TupleNode || lhs is IndexNode))
@@ -479,7 +479,8 @@ public sealed class Parser
   // import_package := <dotted> ('as' <identifier>)?
   // import_ident   := <identifier> ('as' <identifier>)?
   Node ParseImport()
-  { Node stmt;
+  { Position start = tokenStart;
+    Node stmt;
     if(TryEat(Token.From))
     { string module = ParseDotted();
       Eat(Token.Import);
@@ -516,6 +517,7 @@ public sealed class Parser
         stmt = new ImportNode(names.ToArray(), asNames.ToArray());
       }
     }
+    stmt = SetPos(stmt, start);
     Eat(Token.EOL);
     return stmt;
   }
