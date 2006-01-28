@@ -449,11 +449,11 @@ public sealed class BoaLanguage : Language
   }
 
   public override Node Parse(string sourceName, string code)
-  { return AST.Create(new Parser(sourceName, code).Parse());
+  { return new MarkSourceNode(sourceName, code, AST.Create(new Parser(sourceName, code).Parse()));
   }
 
   public override Node Parse(string sourceName, System.IO.TextReader data)
-  { return AST.Create(new Parser(sourceName, data).Parse());
+  { return Parse(sourceName, data.ReadToEnd());
   }
 
   #region ToCode
