@@ -81,7 +81,6 @@ public sealed class Parser
     { while(true)
       { if(TryEat(Token.EOL)) continue;
         if(TryEat(Token.EOF)) break;
-        int line = this.line, column = this.column;
         stmts.Add(ParseStatement());
       }
       return stmts.Count==0 ? new PassNode() : (Node)new BodyNode(stmts.ToArray());
@@ -106,7 +105,7 @@ public sealed class Parser
   // statement     := <stmt_line> | <compound_stmt>
   // compount_stmt := <if_stmt> | <while_stmt> | <for_stmt> | <def_stmt> | <try_stmt> | <global_stmt> |
   //                  <import_stmt> | <class_stmt> | <label_stmt> | <lock_stmt> | <using_stmt>
-  // label_stmt    := <identitier> <suite>
+  // label_stmt    := <identitier> ':' <suite>
   public Node ParseStatement()
   { switch(token)
     { case Token.If:     return ParseIf();
@@ -317,7 +316,7 @@ public sealed class Parser
     }
     else bases = new Node[0];
     return new ClassStatement(name, bases, ParseSuite());*/
-    return null;
+    throw new NotImplementedException();
   }
 
   // compare    := <isin> (<compare_op> <isin>)*
@@ -434,7 +433,8 @@ public sealed class Parser
     Eat(Token.For);
     Name[] names = ParseNameList();
     Eat(Token.In);
-    Node loopExp = ParseExpression();
+    Position start = tokenStart;
+    Node loopExp = SetPos(ParseExpression(), start);
     loopDepth++;
     Node body=ParseSuite(), elze=this.indent==indent && TryEat(Token.Else) ? ParseSuite() : null;
     loopDepth--;
@@ -463,7 +463,8 @@ public sealed class Parser
   { if(token!=Token.If && token!=Token.Elif) Unexpected(token);
     int indent=this.indent;
     NextToken();
-    Node test = ParseExpression();
+    Position start = tokenStart;
+    Node test = SetPos(ParseExpression(), start);
     Node body = ParseSuite(), elze = null;
     if(this.indent==indent)
     { if(token==Token.Elif) elze = ParseIf();
@@ -814,61 +815,63 @@ public sealed class Parser
   // del_stmt      := 'del' <lvalue> (',' <lvalue>)*
   // goto_stmt     := 'goto' <identifier>
   Node ParseSimpleStmt()
-  { switch(token)
-    { case Token.Print: return ParsePrintStmt();
+  { Position start = tokenStart;
+    Node ret = null;
+
+    switch(token)
+    { case Token.Print: ret = ParsePrintStmt(); break;
       case Token.Break:
-      { BreakNode bs=null;
         if(NextToken()==Token.Identifier)
-        { bs = new BreakNode((string)value);
+        { ret = new BreakNode((string)value);
           NextToken();
         }
         else if(!InLoop) SyntaxError("'break' encountered outside loop");
-        else bs = new BreakNode(null);
-        return bs;
-      }
+        else ret = new BreakNode(null);
+        break;
       case Token.Continue:
-      { RestartNode cs=null;
         if(NextToken()==Token.Identifier)
-        { cs = new RestartNode((string)value);
+        { ret = new RestartNode((string)value);
           NextToken();
         }
         else if(!InLoop) SyntaxError("'continue' encountered outside loop");
-        else cs = new RestartNode(null);
-        return cs;
-      }
-      case Token.Pass: NextToken(); return new PassNode();
+        else ret = new RestartNode(null);
+        break;
+      case Token.Pass: NextToken(); ret = new PassNode(); break;
       case Token.Return:
         NextToken();
-        return token==Token.EOL || token==Token.Semicolon ? new ReturnNode() : new ReturnNode(ParseExpression());
+        ret = token==Token.EOL || token==Token.Semicolon ? new ReturnNode() : new ReturnNode(ParseExpression());
+        break;
       case Token.Raise:
-      { NextToken();
+        NextToken();
         if(token==Token.EOL || token==Token.Semicolon) return new ThrowNode();
-        Node expr = ParseExpression();
-        if(TryEat(Token.Comma))
+        ret = ParseExpression();
+        if(!TryEat(Token.Comma)) ret = new ThrowNode(ret);
+        else
           using(CachedList<Node> objs = CachedList<Node>.Alloc())
           { do objs.Add(ParseExpression()); while(TryEat(Token.Comma));
-            return new ThrowNode(expr, objs.ToArray());
+            ret = new ThrowNode(ret, objs.ToArray());
           }
-        else return new ThrowNode(expr);
-      }
-      case Token.Assert: NextToken(); return new AssertNode(ParseExpression());
-      case Token.Yield: NextToken(); hasYield=true; return new YieldNode(ParseExpression());
+        break;
+      case Token.Assert: NextToken(); ret = new AssertNode(ParseExpression()); break;
+      case Token.Yield: NextToken(); hasYield=true; ret = new YieldNode(ParseExpression()); break;
       case Token.Del:
         using(CachedList<Node> list = CachedList<Node>.Alloc())
         { NextToken();
           bool obt = bareTuples;
           bareTuples = false;
           do
-          { Node e = ParseExpression();
-            if(!(e is VariableNode || e is GetSlotNode || e is TupleNode || e is IndexNode))
-              SyntaxError("can't delete {0}", e.GetType());
-            list.Add(e);
+          { ret = ParseExpression();
+            if(!(ret is VariableNode || ret is GetSlotNode || ret is TupleNode || ret is IndexNode))
+              SyntaxError("can't delete {0}", ret.GetType());
+            list.Add(ret);
           } while(TryEat(Token.Comma));
           bareTuples = obt;
-          return new BoaDeleteNode(list.ToArray());
+          ret = new BoaDeleteNode(list.ToArray());
         }
-      default: return ParseExprStmt();
+        break;
+      default: ret = ParseExprStmt(); break;
     }
+    return SetPos(ret, start);
   }
 
   // stmt_line := <simple_stmt> (';' <simple_stmt>)* (NEWLINE | EOF)
@@ -970,7 +973,8 @@ public sealed class Parser
   // using_stmt ::= 'using' <expression> <suite>
   Node ParseUsingBlock(Token token)
   { Eat(token);
-    Node expr=ParseExpression(), body=ParseSuite();
+    Position start = tokenStart;
+    Node expr=SetPos(ParseExpression(), start), body=ParseSuite();
     return token==Token.Lock ? new LockNode(expr, body) : (Node)new UsingNode(expr, body);
   }
 
@@ -978,7 +982,8 @@ public sealed class Parser
   Node ParseWhile()
   { int indent = this.indent;
     Eat(Token.While);
-    Node expr = ParseExpression();
+    Position start = tokenStart;
+    Node expr = SetPos(ParseExpression(), start);
     loopDepth++;
     Node body=ParseSuite(), elze=this.indent==indent && TryEat(Token.Else) ? ParseSuite() : null;
     loopDepth--;
@@ -986,8 +991,11 @@ public sealed class Parser
   }
 
   Token PeekToken()
-  { if(nextToken!=Token.None) return nextToken;
-    return nextToken = ReadToken(ref nextValue);
+  { Position start = tokenStart;
+    if(nextToken!=Token.None) return nextToken;
+    nextToken = ReadToken(ref nextValue);
+    tokenStart = start;
+    return nextToken;
   }
 
   void PushBack()
@@ -1011,25 +1019,30 @@ public sealed class Parser
   }
 
   #region ReadToken
-  Token ReadToken() { return ReadToken(ref value); }
+  Token ReadToken()
+  { lastTokenEnd = new Position(line, column - (lastChar==0 ? 0 : 1));
+    return ReadToken(ref value);
+  }
+
   Token ReadToken(ref object value)
   { char c;
-
     while(true)
     { if(token==Token.EOL)
-      { c=ReadChar();
+      { c = ReadChar();
         if(wantEOL)
         { indent=0;
           while(c!=0 && (char.IsWhiteSpace(c) || c=='#'))
           { if(c=='\n') indent=0;
             else if(c=='#') { do c = ReadChar(); while(c!='\n' && c!=0); indent=0; }
             else indent++;
-            c=ReadChar();
+            c = ReadChar();
           }
         }
-        else while(c!=0 && char.IsWhiteSpace(c)) c=ReadChar();
+        else while(c!=0 && char.IsWhiteSpace(c)) c = ReadChar();
       }
       else do c=ReadChar(); while(c!='\n' && c!=0 && char.IsWhiteSpace(c));
+
+      tokenStart = new Position(line, column-1);
 
       if(char.IsDigit(c) || c=='.')
       { if(c=='.')
@@ -1279,6 +1292,12 @@ public sealed class Parser
   }
   #endregion
 
+  Node SetPos(Node node, Position start)
+  { node.StartPos = start;
+    node.EndPos = lastTokenEnd;
+    return node;
+  }
+
   void SyntaxError(string format, params object[] args) { SyntaxError(string.Format(format, args)); }
   void SyntaxError(string message) { throw Ops.SyntaxError("{0}({1},{2}): {3}", sourceFile, line, column, message); }
 
@@ -1295,6 +1314,7 @@ public sealed class Parser
   string     sourceFile, data;
   Token      token=Token.EOL, nextToken=Token.None;
   object     value, nextValue;
+  Position   tokenStart, lastTokenEnd;
   int        line=1, column=1, pos, indent, funcDepth, loopDepth;
   char       lastChar;
   bool       bareTuples=true, wantEOL=true, hasYield;
