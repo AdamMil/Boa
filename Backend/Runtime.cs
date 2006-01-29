@@ -96,7 +96,8 @@ public static class ArrayOps
     if(ret==null) ret = new object[aa.Length+ab.Length];
     aa.CopyTo(ret, 0);
     ab.CopyTo(ret, aa.Length);
-    return a is Tuple ? new Tuple((object[])ret) : a is Array ? ret : (object)new List((object[])ret, ret.Length);
+    return a is Tuple ? new Tuple((object[])ret)
+                      : a is Array ? ret : (object)List.InternalMake((object[])ret, 0, ret.Length);
     
     badTypes:
     throw Ops.ArgError("invalid operand types for sequence concatenation: '{0}' and '{1}'",
@@ -161,7 +162,8 @@ public static class ArrayOps
     bv = bvb&mask;
     if(bv>0) Array.Copy(dest, 0, dest, ai, (bvb&mask)*source.Length);
 
-    return a is Tuple ? new Tuple((object[])dest) : a is Array ? dest : (object)new List((object[])dest, dest.Length);
+    return a is Tuple ? new Tuple((object[])dest)
+                      : a is Array ? dest : (object)List.InternalMake((object[])dest, 0, dest.Length);
   }
   
   public static string ToCode(Array arr)
@@ -207,11 +209,11 @@ public sealed class BoaHash : IEqualityComparer
 
 #region BoaOps
 public static class BoaOps
-{ public static System.IO.Stream ExpectFile(object obj)
-  { System.IO.Stream stream = obj as System.IO.Stream;
-    if(stream==null)
-      throw new ArgumentException("Expected object of type System.IO.Stream, but received "+Ops.TypeName(obj));
-    return stream;
+{ public static System.IO.TextWriter ExpectWriter(object obj)
+  { System.IO.TextWriter writer = obj as System.IO.TextWriter;
+    if(writer==null)
+      throw new ArgumentException("Expected object of type System.IO.TextWriter, but received "+Ops.TypeName(obj));
+    return writer;
   }
 
   public static int FixIndex(int index, int length)
@@ -337,14 +339,12 @@ public static class BoaOps
   public static void Print(object file, object o)
   { string str = Ops.Str(o);
     if(file==null) { Console.Write(str); return; }
-
-    byte[] data = System.Text.Encoding.Default.GetBytes(str);
-    ExpectFile(file).Write(data, 0, data.Length);
+    ExpectWriter(file).Write(str);
   }
 
   public static void PrintNewline(object file)
   { if(file==null) { Console.WriteLine(); return; }
-    ExpectFile(file).WriteByte((byte)'\n');
+    ExpectWriter(file).WriteLine();
   }
 
   public static List SequenceSlice(IList list, Slice slice)
@@ -501,9 +501,10 @@ public sealed class List : IMutableSliceable, IList, IComparable, ICloneable, IR
   public List(ICollection c) : this(c.Count) { c.CopyTo(items, 0); count = c.Count; }
   public List(IEnumerator e) : this() { while(e.MoveNext()) Add(e.Current); }
   public List(object o) : this(BoaOps.GetEnumerator(o)) { }
-  internal List(object[] arr) { items=arr; count=arr.Length; }
-  internal List(object[] arr, int length) { items=arr; count=length; }
-  internal List(object[] arr, int start, int length)
+
+  List(object[] arr) { items=arr; count=arr.Length; }
+
+  List(object[] arr, int start, int length)
   { if(start==0) { items=arr; count=length; }
     else
     { count = length;
@@ -511,6 +512,9 @@ public sealed class List : IMutableSliceable, IList, IComparable, ICloneable, IR
       Array.Copy(arr, start, items, 0, length);
     }
   }
+
+  public static List InternalMake(object[] arr) { return new List(arr); }
+  public static List InternalMake(object[] arr, int start, int length) { return new List(arr, start, length); }
 
   public void AddRange(ICollection col)
   { ResizeTo(count+col.Count);
@@ -559,7 +563,7 @@ public sealed class List : IMutableSliceable, IList, IComparable, ICloneable, IR
   public Tuple ToTuple()
   { object[] ti = new object[count];
     Array.Copy(items, ti, count);
-    return Tuple.Make(ti);
+    return Tuple.InternalMake(ti);
   }
 
   #region IMutableSliceable Members
@@ -830,7 +834,7 @@ public sealed class Slice : IRepresentable
   public Tuple GetIndices(int length)
   { int start, stop, step;
     GetIndices(length, out start, out stop, out step);
-    return Tuple.Make(start, stop, step);
+    return Tuple.InternalMake(start, stop, step);
   }
 
   public void GetIndices(int length, out int start, out int stop, out int step)
@@ -1234,14 +1238,9 @@ public sealed class Tuple : ISliceable, IList, IComparable, IRepresentable
       list.CopyTo(items, 0);
     }
   }
+
   Tuple(object[] items) { this.items=items; }
-// FIXME: the object[] constructor should be internal. fix the access issues with LCG
-public static Tuple Make(ICollection col)
-{ object[] items = new object[col.Count];
-  col.CopyTo(items, 0);
-  return new Tuple(items);
-}
-public static Tuple Make(params object[] items) { return new Tuple(items); }
+  public static Tuple InternalMake(params object[] items) { return new Tuple(items); }
 
   #region ISliceable Members
   public ICollection GetSlice(Slice slice)

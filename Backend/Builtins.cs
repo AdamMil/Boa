@@ -24,6 +24,7 @@ using System.Collections;
 using System.IO;
 using System.Reflection;
 using Scripting;
+using Scripting.Backend;
 
 namespace Boa.Backend
 {
@@ -35,6 +36,11 @@ public sealed class Builtins
       return instance;
     }
   }
+
+  public static readonly ReflectedType dict = ReflectedType.FromType(typeof(Dict));
+  public static readonly ReflectedType @int = ReflectedType.FromType(typeof(int));
+  public static readonly ReflectedType list = ReflectedType.FromType(typeof(List));
+  public static readonly ReflectedType tuple = ReflectedType.FromType(typeof(Tuple));
 
 public static void loadAssemblyByName(string name) { Scripting.Backend.Interop.LoadAssemblyByName(name); }
 
@@ -99,6 +105,39 @@ list of valid attributes for that object. The resulting list is sorted alphabeti
     return list;
   }
 
+  [DocString(@"execfile(filename[, globals])
+
+This function is similar to the exec statement, but parses a file instead of
+a string. It is different from the import statement in that it does not use
+the module administration -- it reads the file unconditionally and does not
+create a new module.
+
+The arguments are a file name and an optional dictionary. The file is
+parsed and evaluated as a sequence of Boa statements (similarly to a module)
+using the global dictionary as the global namespace. If the globals
+dictionary is omitted, the expression is executed in the environment
+where execfile() is called. The return value is null.")]
+  public static void execfile(string filename) { execfile(filename, null); }
+  public static void execfile(string filename, IDictionary globals)
+  { TopLevel oldTop = TopLevel.Current;
+    Scripting.Backend.Language oldLang = Options.Current.Language;
+    try
+    { if(globals!=null)
+      { TopLevel.Current = new TopLevel();
+        foreach(DictionaryEntry de in globals) TopLevel.Current.Bind(Ops.Str(de.Key), de.Value);
+      }
+      if(!File.Exists(filename)) throw new FileNotFoundException("The requested file could not be found.", filename);
+      string ext = Path.GetExtension(filename);
+      Options.Current.Language = Scripting.Scripting.IsRegistered(ext) ? Scripting.Scripting.LoadLanguage(ext)
+                                                                       : BoaLanguage.Instance;
+      SnippetMaker.GenerateDynamic(Scripting.AST.CreateCompiled(Options.Current.Language.ParseFile(filename))).Run(null);
+    }
+    finally
+    { TopLevel.Current = oldTop;
+      Options.Current.Language = oldLang;
+    }
+  }
+
   [DocString(@"fancyCallable(object) -> bool
 
 Return true if the object argument is callable with keywords or list/dictionary arguments..")]
@@ -152,6 +191,20 @@ Note that filter(function, list) is equivalent to [item for item in list if func
         }
       return seq is Tuple ? ret.ToTuple() : (object)ret;
     }
+  }
+
+  [DocString(@"len(object) -> int
+
+Return the length (the number of items) of an object. The argument may be a
+sequence (string, tuple or list) or a mapping (dictionary).")]
+  public static int len(object o)
+  { string s = o as string;
+    if(s!=null) return s.Length;
+
+    ICollection col = o as ICollection;
+    if(col!=null) return col.Count;
+
+    throw new ArgumentException("len: can't retrieve length of '"+Ops.TypeName(o)+"'");
   }
 
   [DocString(@"map(function, seq1, ...) -> list
@@ -221,8 +274,50 @@ arguments may be any kind of sequence; the result is always a list.")]
         if(enums[i].MoveNext()) { args[i]=enums[i].Current; done=false; }
         else args[i] = null;
       if(done) break;
-      ret.Add(proc==null ? Tuple.Make(args) : proc.Call(args));
+      ret.Add(proc==null ? Tuple.InternalMake(args) : proc.Call(args));
     }
+    return ret;
+  }
+
+  [DocString(@"max(sequence) -> object
+max(value1, value2, ...) -> object
+
+With a single argument s, returns the largest item of a non-empty sequence
+(such as a string, tuple or list). With more than one argument, returns the
+largest of the arguments.")]
+  public static object max(object seq)
+  { IEnumerator e = BoaOps.GetEnumerator(seq);
+    if(!e.MoveNext()) throw new ArgumentException("max: sequence is empty");
+    object ret = e.Current;
+    while(e.MoveNext()) if(Ops.Compare(e.Current, ret)>0) ret = e.Current;
+    return ret;
+  }
+
+  public static object max(params object[] args)
+  { Ops.CheckArity("max", args, 1, -1);
+    object ret = args[0];
+    for(int i=1; i<args.Length; i++) if(Ops.Compare(args[i], ret)>0) ret = args[i];
+    return ret;
+  }
+
+  [DocString(@"min(sequence) -> object
+min(value1, value2, ...) -> object
+
+With a single argument s, returns the smallest item of a non-empty sequence
+(such as a string, tuple or list). With more than one argument, returns the
+smallest of the arguments.")]
+  public static object min(object seq)
+  { IEnumerator e = BoaOps.GetEnumerator(seq);
+    if(!e.MoveNext()) throw new ArgumentException("min: sequence is empty");
+    object ret = e.Current;
+    while(e.MoveNext()) if(Ops.Compare(e.Current, ret)<0) ret = e.Current;
+    return ret;
+  }
+
+  public static object min(params object[] args)
+  { Ops.CheckArity("min", args, 1, -1);
+    object ret = args[0];
+    for(int i=1; i<args.Length; i++) if(Ops.Compare(args[i], ret)<0) ret = args[i];
     return ret;
   }
 
@@ -340,6 +435,8 @@ useful to be able to access this operation as an ordinary function. For many
 types, this function makes an attempt to return a string that would yield an
 object with the same value when passed to eval().")]
   public static string repr(object o) { return Ops.ToCode(o); }
+
+  public static string str(object o) { return Ops.Str(o); }
 
   [DocString(@"typeof(object) -> type
 

@@ -367,7 +367,7 @@ public sealed class BoaLanguage : Language
   public override bool EmitConstant(CodeGenerator cg, object value)
   { if(value is Tuple)
     { cg.EmitObjectArray(((Tuple)value).items);
-      cg.EmitCall(typeof(Tuple), "Make", typeof(object[])); // TODO: use the constructor
+      cg.EmitCall(typeof(Tuple), "InternalMake");
     }
     else if(value is List)
     { List list = (List)value;
@@ -411,7 +411,7 @@ public sealed class BoaLanguage : Language
   { if(length==0) cg.EmitFieldGet(typeof(List), "Empty");
     else
     { cg.EmitObjectArray(args, start, length);
-      cg.EmitNew(typeof(List), typeof(object[]));
+      cg.EmitCall(typeof(List), "InternalMake", typeof(object[]));
     }
   }
 
@@ -451,7 +451,7 @@ public sealed class BoaLanguage : Language
   public override bool IsTrue(object value) { return BoaOps.IsTrue(value); }
 
   public override object PackArguments(object[] args, int start, int length)
-  { return length==0 ? List.Empty : new List(args, start, length);
+  { return length==0 ? List.Empty : List.InternalMake(args, start, length);
   }
 
   public override Node Parse(string sourceName, string code)
@@ -1262,13 +1262,13 @@ public sealed class ListNode : Node
       }
       else
       { cg.EmitObjectArray(Expressions);
-        cg.EmitNew(typeof(List), typeof(object[]));
+        cg.EmitCall(typeof(List), "InternalMake", typeof(object[]));
       }
       etype = typeof(List);
     }
   }
 
-  public override object Evaluate() { return new List(MakeObjectArray(Expressions)); }
+  public override object Evaluate() { return List.InternalMake(MakeObjectArray(Expressions)); }
   public override Type GetNodeType() { return typeof(List); }
 
   public override void MarkTail(bool tail)
@@ -1663,14 +1663,14 @@ public sealed class TupleNode : Node
     { if(IsConstant) cg.EmitConstantObject(Evaluate());
       else
       { cg.EmitObjectArray(Expressions);
-        cg.EmitCall(typeof(Tuple), "Make", typeof(object[])); // TODO: use the constructor
+        cg.EmitCall(typeof(Tuple), "InternalMake");
       }
       etype = typeof(Tuple);
     }
     TailReturn(cg);
   }
 
-  public override object Evaluate() { return Tuple.Make(MakeObjectArray(Expressions)); }
+  public override object Evaluate() { return Tuple.InternalMake(MakeObjectArray(Expressions)); }
   public override Type GetNodeType() { return typeof(Tuple); }
 
   public override void MarkTail(bool tail)
@@ -1772,6 +1772,7 @@ public sealed class WhileNode : LoopNode
        [else]
     */
     string name = GenerateName("while");
+    body.Walk(new LoopJumpReplacer(name));
     Node = new BlockNode(name, new BodyNode(new IfNode(new UnaryOpNode(Operator.LogicalNot, test),
                                                        new BreakNode(name)),
                                             body, new RestartNode(name)));
