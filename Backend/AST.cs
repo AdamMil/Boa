@@ -214,10 +214,8 @@ namespace Boa.Backend
 {
 
 #region AST
-public sealed class AST
-{ AST() { }
-
-  public static Node Create(Node node)
+public static class AST
+{ public static Node Create(Node node)
   { using(BoaWalker bw = new BoaWalker())
     { node.Walk(bw);
       return node;
@@ -446,7 +444,10 @@ public sealed class BoaLanguage : Language
     return false;
   }
 
-  public override bool IsHashableConstant(object value) { return value is Tuple || value is Slice; }
+  public override bool IsHashableConstant(object value)
+  { return base.IsHashableConstant(value) || value is Tuple || value is Slice;
+  }
+
   public override bool IsTrue(object value) { return BoaOps.IsTrue(value); }
 
   public override object PackArguments(object[] args, int start, int length)

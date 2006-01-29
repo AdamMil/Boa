@@ -32,10 +32,8 @@ namespace Boa.Backend
 {
 
 #region ArrayOps
-public sealed class ArrayOps
-{ ArrayOps() { }
-
-  public static int Compare(object a, object b)
+public static class ArrayOps
+{ public static int Compare(object a, object b)
   { if(b==null) return 1;
     Array aa, ab, ret=null;
     if(a is Tuple)
@@ -208,10 +206,8 @@ public sealed class BoaHash : IEqualityComparer
 #endregion
 
 #region BoaOps
-public sealed class BoaOps
-{ BoaOps() { }
-
-  public static System.IO.Stream ExpectFile(object obj)
+public static class BoaOps
+{ public static System.IO.Stream ExpectFile(object obj)
   { System.IO.Stream stream = obj as System.IO.Stream;
     if(stream==null)
       throw new ArgumentException("Expected object of type System.IO.Stream, but received "+Ops.TypeName(obj));
@@ -854,9 +850,8 @@ public sealed class Slice : IRepresentable
 #endregion
 
 #region StringOps
-public sealed class StringOps
-{ StringOps() { }
-
+public static class StringOps
+{ 
   #region SequenceWrapper
   public class SequenceWrapper : ISliceable, ICollection, IList
   { public SequenceWrapper(string str) { this.str = str; }
