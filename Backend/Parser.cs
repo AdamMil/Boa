@@ -612,6 +612,7 @@ public sealed class Parser
 
   // primary := LITERAL | <ident> | '(' <expression> ')' | '[' <array_list> ']' | '{' <hash_list> '}' |
   //            '[' <list_comprehension> ']' | <tuple of <expression>> | '`' <expression> '`'
+  //            '&' <primary>
   // tuple of T := '(' (<T> ',')+ <T>? ')'
   Node ParsePrimary()
   { Node expr;
@@ -692,6 +693,9 @@ public sealed class Parser
         Expect(Token.BackQuote);
         expr = new ReprNode(expr);
         break;
+      case Token.BitAnd: // ampersand
+        NextToken();
+        return new ReferenceNode(ParsePrimary()); // we return because ParsePrimary() calls NextToken() at the end and we don't want to call it again
       default: Unexpected(token); return null;
     }
     bareTuples=obt; wantEOL=owe;
@@ -699,8 +703,7 @@ public sealed class Parser
     return expr;
   }
 
-  // print_stmt := 'print' (<expression> (',' <expression>)* ','?)? |
-  //               'print' '>>' <expression> (',' <expression> (',' <expression>)* ','?)?
+  // print_stmt := 'print' ('>>' <expression>)? (<expression> (',' <expression>)* ','?)?
   Node ParsePrintStmt()
   { Eat(Token.Print);
     if(token==Token.EOL || token==Token.Semicolon) return new PrintNode();
@@ -711,18 +714,21 @@ public sealed class Parser
     Node file = TryEat(Token.RightShift) ? ParseExpression() : null;
     if(file!=null)
     { if(token==Token.EOL || token==Token.Semicolon)
-      { bareTuples=old;
+      { bareTuples = old;
         return new PrintNode(file);
       }
-      Eat(Token.Comma);
     }
 
     using(CachedList<Node> stmts = CachedList<Node>.Alloc())
-    { do
+    { while(true)
       { trailing = true;
         stmts.Add(ParseExpression());
-        if(TryEat(Token.Comma)) trailing = false;
-      } while(token!=Token.EOL && token!=Token.Semicolon);
+        if(!TryEat(Token.Comma)) break;
+        else
+        { trailing = false;
+          if(token==Token.EOL || token==Token.Semicolon) break;
+        }
+      }
       bareTuples = old;
       return new PrintNode(file, stmts.ToArray(), trailing || stmts.Count==0);
     }
