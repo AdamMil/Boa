@@ -415,8 +415,6 @@ public sealed class BoaLanguage : Language
     }
   }
 
-  public override bool ExcludeFromImport(string name) { return name.StartsWith("_"); }
-
   public override bool IsConstant(object value)
   { if(base.IsConstant(value)) return true;
 
@@ -461,6 +459,8 @@ public sealed class BoaLanguage : Language
   public override Node Parse(string sourceName, System.IO.TextReader data)
   { return Parse(sourceName, data.ReadToEnd());
   }
+
+  public override bool ShouldAddBuiltins(Type type) { return type!=typeof(Builtins); }
 
   #region ToCode
   public override string ToCode(object obj)
@@ -1162,11 +1162,11 @@ public sealed class ImportFromNode : SetNodeBase
   { MemberContainer mc = Importer.Load(Module);
     InterpreterEnvironment ie = InterpreterEnvironment.Current;
     if(TopLevel || ie==null)
-    { if(Names==null) mc.Import(Scripting.TopLevel.Current);
+    { if(Names==null) mc.Export(Scripting.TopLevel.Current);
       else
       { string[] asNames = new string[AsNames.Length];
         for(int i=0; i<AsNames.Length; i++) asNames[i] = AsNames[i].String;
-        mc.Import(Scripting.TopLevel.Current, Names, asNames);
+        mc.Export(Scripting.TopLevel.Current, Names, asNames);
       }
     }
     else for(int i=0; i<Names.Length; i++) ie.Set(AsNames[i].String, mc.GetSlot(mc, Names[i]));
@@ -1266,6 +1266,7 @@ public sealed class ListNode : Node
       }
       etype = typeof(List);
     }
+    TailReturn(cg);
   }
 
   public override object Evaluate() { return List.InternalMake(MakeObjectArray(Expressions)); }
