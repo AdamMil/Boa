@@ -21,8 +21,10 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
+using System.Text;
 using Scripting;
 using Scripting.Backend;
 
@@ -98,14 +100,15 @@ delattr(x, 'foobar') is equivalent to del x.foobar")]
 
 Without arguments, return the list of names in the current local symbol table. With an argument, attempts to return a
 list of valid attributes for that object. The resulting list is sorted alphabetically.")]
-  public static List dir() { throw new NotImplementedException(); }
+  public static List dir() { return dir(TopLevel.Current); }
   public static List dir(object o)
   { List list = new List(MemberContainer.FromObject(o).GetMemberNames());
     list.Sort();
     return list;
   }
 
-  [DocString(@"execfile(filename[, globals])
+  // TODO: it's expected that the changes to the top-level environment (TLE) will be visible (either in the TLE or in 'globals')
+  [DocString(@"execfile(filename[, globals, [assumeBoa]])
 
 This function is similar to the exec statement, but parses a file instead of
 a string. It is different from the import statement in that it does not use
@@ -113,23 +116,44 @@ the module administration -- it reads the file unconditionally and does not
 create a new module.
 
 The arguments are a file name and an optional dictionary. The file is
-parsed and evaluated as a sequence of Boa statements (similarly to a module)
-using the global dictionary as the global namespace. If the globals
-dictionary is omitted, the expression is executed in the environment
-where execfile() is called. The return value is null.")]
-  public static void execfile(string filename) { execfile(filename, null); }
-  public static void execfile(string filename, IDictionary globals)
+parsed and evaluated similarly to a module. If the globals dictionary is
+omitted (or null), the expression is executed in the environment where
+execfile() is called. Otherwise, the global namespace will consist of the
+builtins plus the items from the globals dictionary. Where name conflicts
+arise, the items in the globals dictionary will take precedence.
+The return value is null.
+
+This function can also execute files written in other languages. Normally,
+the file's extension is used to determine which language to use. Unknown
+extensions are assumed to be Boa. When executing a file from another language,
+the global namespace is handled differently. If a globals dictionary is passed in,
+the namespace will be created as above, but the builtins will be the builtins
+for that language. Otherwise (if the globals dictionary is omitted), 
+")]
+  public static void execfile(string filename) { execfile(filename, null, false); }
+  public static void execfile(string filename, IDictionary globals) { execfile(filename, null, false); }
+  public static void execfile(string filename, IDictionary globals, bool assumeBoa)
   { TopLevel oldTop = TopLevel.Current;
     Scripting.Backend.Language oldLang = Options.Current.Language;
     try
-    { if(globals!=null)
+    { if(!File.Exists(filename)) throw new FileNotFoundException("The requested file could not be found.", filename);
+      string ext = Path.GetExtension(filename);
+      Options.Current.Language = assumeBoa || !Scripting.Scripting.IsRegistered(ext)
+                                   ? BoaLanguage.Instance : Scripting.Scripting.LoadLanguage(ext);
+      if(globals!=null)
       { TopLevel.Current = new TopLevel();
+        MemberContainer mc = Options.Current.Language.Builtins;
+        if(mc!=null) mc.Export(TopLevel.Current);
         foreach(DictionaryEntry de in globals) TopLevel.Current.Bind(Ops.Str(de.Key), de.Value);
       }
-      if(!File.Exists(filename)) throw new FileNotFoundException("The requested file could not be found.", filename);
-      string ext = Path.GetExtension(filename);
-      Options.Current.Language = Scripting.Scripting.IsRegistered(ext) ? Scripting.Scripting.LoadLanguage(ext)
-                                                                       : BoaLanguage.Instance;
+      else if(!(Options.Current.Language is BoaLanguage))
+      { TopLevel.Current = new TopLevel();
+        MemberContainer mc = Options.Current.Language.Builtins;
+        if(mc!=null) mc.Export(TopLevel.Current);
+        foreach(KeyValuePair<string,Binding> de in oldTop.Globals.Dict)
+          if(de.Value.From==oldTop) TopLevel.Current.Globals.Dict[de.Key] = de.Value;
+      }
+
       SnippetMaker.GenerateDynamic(Scripting.AST.CreateCompiled(Options.Current.Language.ParseFile(filename))).Run(null);
     }
     finally
@@ -167,7 +191,7 @@ Note that filter(function, list) is equivalent to [item for item in list if func
     if(seq is string)
     { if(proc==null) return seq;
 
-      System.Text.StringBuilder sb = new System.Text.StringBuilder();
+      StringBuilder sb = new StringBuilder();
       string str = (string)seq;
       for(int i=0; i<str.Length; i++)
       { if(realloc) args = new object[1];
@@ -191,6 +215,18 @@ Note that filter(function, list) is equivalent to [item for item in list if func
         }
       return seq is Tuple ? ret.ToTuple() : (object)ret;
     }
+  }
+
+  public static string join(string sep, object seq)
+  { IEnumerator e = BoaOps.GetEnumerator(seq);
+    StringBuilder sb = new StringBuilder();
+    bool first = true;
+    while(e.MoveNext())
+    { if(first) first = false;
+      else sb.Append(sep);
+      sb.Append(Ops.Str(e.Current));
+    }
+    return sb.ToString();
   }
 
   [DocString(@"len(object) -> int
