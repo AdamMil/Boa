@@ -133,8 +133,8 @@ for that language. Otherwise (if the globals dictionary is omitted),
   public static void execfile(string filename) { execfile(filename, null, false); }
   public static void execfile(string filename, IDictionary globals) { execfile(filename, null, false); }
   public static void execfile(string filename, IDictionary globals, bool assumeBoa)
-  { TopLevel oldTop = TopLevel.Current;
-    Scripting.Backend.Language oldLang = Options.Current.Language;
+  { TopLevel oldTop  = TopLevel.Current;
+    Language oldLang = Options.Current.Language;
     try
     { if(!File.Exists(filename)) throw new FileNotFoundException("The requested file could not be found.", filename);
       string ext = Path.GetExtension(filename);
@@ -154,7 +154,7 @@ for that language. Otherwise (if the globals dictionary is omitted),
           if(de.Value.From==oldTop) TopLevel.Current.Globals.Dict[de.Key] = de.Value;
       }
 
-      SnippetMaker.GenerateDynamic(Scripting.AST.CreateCompiled(Options.Current.Language.ParseFile(filename))).Run(null);
+      SnippetMaker.GenerateDynamic(Scripting.AST.CreateCompiled(Options.Current.Language.ParseFile(filename))).Run();
     }
     finally
     { TopLevel.Current = oldTop;
