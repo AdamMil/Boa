@@ -1,0 +1,1 @@
+An unfinished reimplementation of a python compiler for .NET. Mostly useless given the existence of Iron Python. This project is more technically sophisticated but much less complete than the BoaOld project.
